@@ -1,0 +1,10 @@
+services:
+  server:
+    build: ./server
+    ports:
+      - "3001:3001"
+
+  peerjs:
+    image: peerjs/peerjs-server
+    ports:
+      - "9000:9000"
