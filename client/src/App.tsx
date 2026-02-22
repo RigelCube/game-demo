@@ -211,6 +211,11 @@ export function App() {
       {/* Opponent Video (Top 0–45%) */}
       <div className="relative w-full overflow-hidden" style={{ height: '45dvh' }}>
         <video ref={remoteVideoRef} autoPlay playsInline className={`absolute inset-0 w-full h-full object-cover ${opponentSeat?.online ? '' : 'opacity-50'}`} />
+        {opponentSeat && (
+          <div className="absolute top-4 left-4 bg-black/70 px-3 py-2 rounded text-sm font-bold">
+            {opponentSeat.name}
+          </div>
+        )}
         {opponentSeat ? (
           !opponentSeat.online && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/50">
@@ -288,6 +293,9 @@ export function App() {
       {/* My Video (Bottom 55–100%) */}
       <div className="relative w-full overflow-hidden" style={{ height: '45dvh' }}>
         <video ref={myVideoRef} autoPlay muted playsInline className="absolute inset-0 w-full h-full object-cover" />
+        <div className="absolute bottom-4 left-4 bg-black/70 px-3 py-2 rounded text-sm font-bold">
+          {mySeat.name}
+        </div>
       </div>
     </div>
   );
