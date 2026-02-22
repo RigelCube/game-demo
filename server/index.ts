@@ -50,7 +50,11 @@ function generateName(): string {
 }
 
 const io = new Server({
-  cors: { origin: "*" }
+  cors: {
+    origin: ["http://localhost:3000", "http://localhost:3030", "https://pvp.beawhale.io", "https://pvp2.beawhale.io"],
+    methods: ["GET", "POST"],
+    credentials: true
+  }
 });
 
 const playerRecords = new Map<string, PlayerRecord>();
