@@ -292,7 +292,7 @@ export function App() {
 
       {/* My Video (Bottom 55–100%) */}
       <div className="relative w-full overflow-hidden" style={{ height: '45dvh' }}>
-        <video ref={myVideoRef} autoPlay muted playsInline className="absolute inset-0 w-full h-full object-cover" />
+        <video ref={myVideoRef} autoPlay muted playsInline className="absolute inset-0 w-full h-full object-cover" style={{ transform: 'scaleX(-1)' }} />
         <div className="absolute bottom-4 left-4 bg-black/70 px-3 py-2 rounded text-sm font-bold">
           {mySeat.name}
         </div>
