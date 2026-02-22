@@ -54,7 +54,9 @@ const io = new Server({
     origin: ["http://localhost:3000", "http://localhost:3030", "https://pvp.beawhale.io", "https://pvp2.beawhale.io"],
     methods: ["GET", "POST"],
     credentials: true
-  }
+  },
+  pingTimeout: 30000, 
+  pingInterval: 10000,
 });
 
 const playerRecords = new Map<string, PlayerRecord>();
@@ -236,8 +238,6 @@ io.on("connection", (socket: Socket) => {
   });
 
   socket.on("disconnect", () => {
-    console.log(`User disconnected: ${socket.id}`);
-
     const seatLocation = socketToSeat.get(socket.id);
     if (!seatLocation) return;
 

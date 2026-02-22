@@ -43,8 +43,8 @@ const MY_PLAYER_ID = getOrCreatePlayerId();
 const socket: Socket = io(BET_SERVER_URL, {
   reconnection: true,
   reconnectionDelay: 1000,
-  reconnectionDelayMax: 5000,
-  reconnectionAttempts: 5
+  reconnectionDelayMax: 2000,
+  reconnectionAttempts: Infinity
 });
 
 socket.on("connect", () => {
