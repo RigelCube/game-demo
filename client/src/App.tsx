@@ -205,76 +205,80 @@ export function App() {
   const opponentSeat = roomState.seats[1 - mySeatIndex!] as SeatView | null;
 
   return (
-    <div className="min-h-screen bg-[#0f0f0f] text-white p-8">
-      <div className="grid grid-cols-2 gap-8 mb-8">
-        {/* Local Video */}
-        <div className="relative bg-black rounded-xl overflow-hidden aspect-video border-2 border-blue-500">
-          <video ref={myVideoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
-          <div className="absolute bottom-2 left-2 text-xs bg-blue-600 px-2 py-1 rounded">
-            P{mySeat.seatIndex + 1} • {mySeat.name}
-          </div>
-          <div className="absolute bottom-2 right-2 text-xs bg-blue-600 px-2 py-1 rounded">
-            💰 {mySeat.balance} • W:{mySeat.wins} L:{mySeat.losses}
-          </div>
-        </div>
-
-        {/* Remote Video */}
-        <div className={`relative bg-black rounded-xl overflow-hidden aspect-video border-2 ${opponentSeat?.online ? 'border-red-500' : 'border-gray-600'}`}>
-          <video ref={remoteVideoRef} autoPlay playsInline className={`w-full h-full object-cover ${opponentSeat?.online ? '' : 'opacity-50'}`} />
-          {opponentSeat ? (
-            <>
-              <div className="absolute bottom-2 left-2 text-xs bg-red-600 px-2 py-1 rounded">
-                P{opponentSeat.seatIndex + 1} • {opponentSeat.name}
-              </div>
-              <div className="absolute bottom-2 right-2 text-xs bg-red-600 px-2 py-1 rounded">
-                💰 {opponentSeat.balance} • W:{opponentSeat.wins} L:{opponentSeat.losses}
-              </div>
-              {!opponentSeat.online && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
-                  <div className="text-xl font-bold">DISCONNECTED</div>
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
-              <div className="text-xl font-bold">WAITING FOR OPPONENT...</div>
+    <div className="h-screen overflow-hidden bg-[#0f0f0f] text-white flex flex-col">
+      {/* Opponent Video (Top 0–45%) */}
+      <div className={`relative w-full overflow-hidden border-b-4 transition-colors ${
+        opponentSeat?.ready ? 'border-green-500' : (opponentSeat?.online ? 'border-gray-700' : 'border-gray-600')
+      }`} style={{ height: '45vh' }}>
+        <video ref={remoteVideoRef} autoPlay playsInline className={`absolute inset-0 w-full h-full object-cover ${opponentSeat?.online ? '' : 'opacity-50'}`} />
+        {opponentSeat ? (
+          !opponentSeat.online && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+              <div className="text-2xl font-bold">DISCONNECTED</div>
             </div>
-          )}
+          )
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/60">
+            <div className="text-xl font-bold">WAITING FOR OPPONENT...</div>
+          </div>
+        )}
+      </div>
+
+      {/* Middle Controls (45–55%) */}
+      <div className="flex flex-col justify-center items-center px-4 gap-1 overflow-hidden" style={{ height: '10vh' }}>
+        {/* Player Info Row */}
+        <div className="flex justify-between items-start w-full text-xs">
+          <div className="flex-1">
+            {opponentSeat && (
+              <>
+                <div className="font-bold truncate">{opponentSeat.name}</div>
+                <div className="text-gray-400">💰 {opponentSeat.balance} • W:{opponentSeat.wins} L:{opponentSeat.losses}</div>
+                <div className="text-gray-500">{opponentSeat.ready ? '✓ READY' : '○ NOT READY'}</div>
+              </>
+            )}
+          </div>
+
+          {/* Game Status + Controls */}
+          <div className="flex-1 flex flex-col items-center gap-1 px-2">
+            <div className="text-lg font-bold text-center leading-tight">
+              {isFlipping ? "🪙 SPINNING..." : lastResult ? `${lastResult.winnerName} WINS!` : "READY?"}
+            </div>
+            <div className="flex items-center gap-2">
+              {roomState.status === 'waiting' && !mySeat.ready && (
+                <input
+                  type="number"
+                  min="1"
+                  max={mySeat.balance}
+                  value={bet}
+                  onChange={(e) => setBet(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="w-20 px-2 py-1 bg-gray-800 border border-gray-600 rounded text-white text-center text-sm"
+                />
+              )}
+              <button
+                onClick={() => socket.emit("toggle_ready", { roomId, bet })}
+                disabled={isFlipping}
+                className={`font-black px-5 py-1 rounded-full text-sm transition-all ${
+                  mySeat.ready ? 'bg-red-500' : 'bg-green-500'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {mySeat.ready ? "CANCEL" : "READY"}
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1 text-right">
+            <div className="font-bold truncate">{mySeat.name}</div>
+            <div className="text-gray-400">💰 {mySeat.balance} • W:{mySeat.wins} L:{mySeat.losses}</div>
+            <div className="text-gray-500">{mySeat.ready ? '✓ READY' : '○ NOT READY'}</div>
+          </div>
         </div>
       </div>
 
-      <div className="text-center">
-        <div className="text-4xl mb-8">
-          {isFlipping ? "🪙 SPINNING..." : lastResult ? `${lastResult.winnerName} WINS!` : "READY?"}
-        </div>
-
-        {roomState.status === 'waiting' && !mySeat.ready && (
-          <div className="mb-6 flex justify-center gap-4">
-            <div>
-              <label className="block text-sm mb-2">Bet Amount</label>
-              <input
-                type="number"
-                min="1"
-                max={mySeat.balance}
-                value={bet}
-                onChange={(e) => setBet(Math.max(1, parseInt(e.target.value) || 1))}
-                className="w-24 px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white text-center"
-              />
-            </div>
-          </div>
-        )}
-
-        <button
-          onClick={() => socket.emit("toggle_ready", { roomId, bet })}
-          disabled={isFlipping}
-          className={`text-2xl font-black px-12 py-4 rounded-full transition-all ${
-            mySeat.ready
-              ? 'bg-red-500'
-              : 'bg-green-500 hover:scale-105'
-          } disabled:opacity-50 disabled:cursor-not-allowed`}
-        >
-          {mySeat.ready ? "CANCEL" : "READY"}
-        </button>
+      {/* My Video (Bottom 55–100%) */}
+      <div className={`relative w-full overflow-hidden border-t-4 transition-colors ${
+        mySeat.ready ? 'border-green-500' : 'border-blue-600'
+      }`} style={{ height: '45vh' }}>
+        <video ref={myVideoRef} autoPlay muted playsInline className="absolute inset-0 w-full h-full object-cover" />
       </div>
     </div>
   );
