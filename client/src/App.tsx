@@ -101,7 +101,7 @@ export function App() {
   useEffect(() => {
     // 1. Setup PeerJS for WebRTC
     const peer = new Peer({ host: RTC_SERVER_HOST, port: RTC_SERVER_PORT, 
-      secure: false
+      secure: true
     });
     peerRef.current = peer;
 
