@@ -38,6 +38,7 @@ interface SeatView {
 interface RoomStateView {
   seats: [SeatView | null, SeatView | null];
   status: 'waiting' | 'flipping' | 'result';
+  timestamp: number;
 }
 
 const ADJECTIVES = ['Crazy', 'Sneaky', 'Bold', 'Lucky', 'Sly', 'Wild', 'Calm', 'Iron', 'Swift', 'Bright'];
@@ -62,6 +63,7 @@ const io = new Server({
 const playerRecords = new Map<string, PlayerRecord>();
 const rooms = new Map<string, RoomState>();
 const socketToSeat = new Map<string, { roomId: string; seatIndex: 0 | 1 }>();
+const roomEmptyTime = new Map<string, number>();
 
 function buildRoomView(room: RoomState): RoomStateView {
   return {
@@ -82,6 +84,7 @@ function buildRoomView(room: RoomState): RoomStateView {
       };
     }) as [SeatView | null, SeatView | null],
     status: room.status,
+    timestamp: Date.now(),
   };
 }
 
@@ -118,6 +121,8 @@ io.on("connection", (socket: Socket) => {
       socketToSeat.set(socket.id, { roomId, seatIndex: existingSeat.seatIndex });
       socket.join(roomId);
       console.log(`Player ${playerId} reconnected to room ${roomId}, seat ${existingSeat.seatIndex}`);
+      // Cancel cleanup since room is no longer empty
+      roomEmptyTime.delete(roomId);
       io.to(roomId).emit("room_state", buildRoomView(room));
       return;
     }
@@ -164,8 +169,12 @@ io.on("connection", (socket: Socket) => {
     seat.ready = !seat.ready;
     if (seat.ready) {
       seat.bet = bet;
+      const player = playerRecords.get(seat.playerId)!;
+      console.log(`Player ${player.name} (${seat.playerId}) ready with bet ${bet} in room ${roomId}, seat ${seat.seatIndex}`);
     } else {
       seat.bet = 0;
+      const player = playerRecords.get(seat.playerId)!;
+      console.log(`Player ${player.name} (${seat.playerId}) cancelled ready in room ${roomId}`);
     }
 
     // Check if both seats occupied and both ready
@@ -198,19 +207,24 @@ io.on("connection", (socket: Socket) => {
       const winnerSeatIndex = Math.random() > 0.5 ? 0 : 1;
       const winnerSeat = room.seats[winnerSeatIndex]!;
       const winner = playerRecords.get(winnerSeat.playerId)!;
+      const loserSeatIndex = 1 - winnerSeatIndex;
+      const loserSeat = room.seats[loserSeatIndex]!;
+      const loser = playerRecords.get(loserSeat.playerId)!;
+      const betAmount = seat0.bet;
 
+      console.log(`FLIP in room ${roomId}: ${winner.name} vs ${loser.name}, bet ${betAmount}`);
       io.to(seatLocation.roomId).emit("start_flip", { winnerId: winner.playerId, winnerName: winner.name });
 
       setTimeout(() => {
         // Update balances and stats
-        const loserSeatIndex = 1 - winnerSeatIndex;
-        const loserSeat = room.seats[loserSeatIndex]!;
-        const loser = playerRecords.get(loserSeat.playerId)!;
-
-        winner.balance += seat0.bet; // or seat1.bet, they're equal
-        loser.balance -= loserSeat.bet;
+        winner.balance += betAmount;
+        loser.balance -= betAmount;
         winner.wins += 1;
         loser.losses += 1;
+
+        console.log(`OUTCOME in room ${roomId}: ${winner.name} WINS! (+${betAmount}) vs ${loser.name} (-${betAmount})`);
+        console.log(`  ${winner.name}: balance ${winner.balance}, wins ${winner.wins}`);
+        console.log(`  ${loser.name}: balance ${loser.balance}, losses ${loser.losses}`);
 
         // Reset seats
         seat0.ready = false;
@@ -255,9 +269,32 @@ io.on("connection", (socket: Socket) => {
     seat.bet = 0;
 
     console.log(`Player disconnected from room ${seatLocation.roomId}, seat ${seatLocation.seatIndex}`);
+
+    // Check if both players are now offline
+    const bothOffline = room.seats[0]?.socketId === null && room.seats[1]?.socketId === null;
+    if (bothOffline && !roomEmptyTime.has(seatLocation.roomId)) {
+      roomEmptyTime.set(seatLocation.roomId, Date.now());
+      console.log(`Room ${seatLocation.roomId} is now empty, will be cleaned up in 2 minutes`);
+    }
+
     io.to(seatLocation.roomId).emit("room_state", buildRoomView(room));
   });
 });
+
+// Periodically broadcast room state and clean up empty rooms
+setInterval(() => {
+  for (const [roomId, room] of rooms.entries()) {
+    io.to(roomId).emit("room_state", buildRoomView(room));
+
+    // Clean up rooms that have been empty for 2 minutes
+    const emptyTime = roomEmptyTime.get(roomId);
+    if (emptyTime && Date.now() - emptyTime > 2 * 60 * 1000) {
+      rooms.delete(roomId);
+      roomEmptyTime.delete(roomId);
+      console.log(`Cleaned up empty room ${roomId}`);
+    }
+  }
+}, 2000);
 
 io.listen(3001);
 console.log("Coinflip Server running on port 3001");

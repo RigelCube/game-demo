@@ -18,6 +18,7 @@ interface SeatView {
 interface RoomStateView {
   seats: [SeatView | null, SeatView | null];
   status: 'waiting' | 'flipping' | 'result';
+  timestamp: number;
 }
 
 const FRONT_SERVER_URL = process.env.BUN_PUBLIC_FRONT_SERVER_URL;
@@ -74,6 +75,9 @@ export function App() {
     throw new Error("undefined");
   }
   const [joined, setJoined] = useState(false);
+  const [isConnected, setIsConnected] = useState(socket.connected);
+  const [showDebug, setShowDebug] = useState(false);
+  const [socketEvents, setSocketEvents] = useState<Array<{ time: string; event: string }>>([]);
   const [roomId] = useState<string>(() => {
     const pathRoomId = getRoomIdFromPath();
     if (!pathRoomId) {
@@ -97,7 +101,7 @@ export function App() {
   useEffect(() => {
     // 1. Setup PeerJS for WebRTC
     const peer = new Peer({ host: RTC_SERVER_HOST, port: RTC_SERVER_PORT, 
-      secure: true  
+      secure: false
     });
     peerRef.current = peer;
 
@@ -140,8 +144,12 @@ export function App() {
     // 2. Socket Listeners
     socket.on("room_state", (state: RoomStateView) => {
       console.log("Received room_state:", state);
+      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "room_state" }]);
       setRoomState(state);
-      setIsFlipping(false);
+      // Only clear flipping when status returns to waiting
+      if (state.status === 'waiting') {
+        setIsFlipping(false);
+      }
 
       // Find my seat by playerId
       const mySeat = state.seats.find(seat => seat && seat.playerId === MY_PLAYER_ID);
@@ -159,18 +167,39 @@ export function App() {
 
     socket.on("start_flip", ({ winnerId, winnerName }: { winnerId: string; winnerName: string }) => {
       console.log("start_flip:", winnerId, winnerName);
+      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "start_flip" }]);
       setIsFlipping(true);
       setLastResult({ winnerId, winnerName });
     });
 
     socket.on("join_rejected", ({ reason }: { reason: string }) => {
       console.error("Join rejected:", reason);
+      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: `join_rejected: ${reason}` }]);
       alert(`Join rejected: ${reason}`);
     });
 
-    // Reset autoJoinedRef on reconnect so we can rejoin
+    // Re-join room on reconnect to sync state
     socket.on("reconnect", () => {
-      autoJoinedRef.current = false;
+      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "reconnect" }]);
+      setIsConnected(true);
+      setIsFlipping(false);
+      setLastResult(null);
+      setRoomState(null);
+      setMySeatIndex(null);
+      setBet(10);
+      if (peerRef.current?.id && roomId) {
+        socket.emit("join_room", { roomId, playerId: MY_PLAYER_ID, peerId: peerRef.current.id });
+      }
+    });
+
+    socket.on("connect", () => {
+      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "connect" }]);
+      setIsConnected(true);
+    });
+
+    socket.on("disconnect", () => {
+      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "disconnect" }]);
+      setIsConnected(false);
     });
 
     return () => {
@@ -178,6 +207,8 @@ export function App() {
       socket.off("start_flip");
       socket.off("join_rejected");
       socket.off("reconnect");
+      socket.off("connect");
+      socket.off("disconnect");
       peer.destroy();
     };
   }, []);
@@ -208,6 +239,16 @@ export function App() {
 
   return (
     <div className="fixed inset-0 bg-[#0f0f0f] text-white flex flex-col overflow-hidden">
+      {/* Reconnecting Overlay */}
+      {!isConnected && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+          <div className="text-center">
+            <div className="text-2xl font-bold mb-4">Reconnecting...</div>
+            <div className="animate-spin inline-block w-8 h-8 border-4 border-gray-600 border-t-white rounded-full"></div>
+          </div>
+        </div>
+      )}
+
       {/* Opponent Video (Top 0–45%) */}
       <div className="relative w-full overflow-hidden" style={{ height: '45dvh' }}>
         <video ref={remoteVideoRef} autoPlay playsInline className={`absolute inset-0 w-full h-full object-cover ${opponentSeat?.online ? '' : 'opacity-50'}`} />
@@ -297,6 +338,44 @@ export function App() {
           {mySeat.name}
         </div>
       </div>
+
+      {/* Debug Panel */}
+      <button
+        onClick={() => setShowDebug(!showDebug)}
+        className="fixed bottom-4 right-4 bg-gray-800 text-white px-3 py-2 rounded text-xs font-bold z-40"
+      >
+        {showDebug ? '✕' : '⚙'}
+      </button>
+
+      {showDebug && (
+        <div className="fixed bottom-16 right-4 bg-black/95 border border-gray-600 rounded w-64 max-h-80 overflow-hidden flex flex-col z-40">
+          <div className="bg-gray-800 px-3 py-2 font-bold text-xs">Socket Events</div>
+          <div className="flex-1 overflow-y-auto p-2 text-xs font-mono">
+            <div className={`mb-1 ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
+              Status: {isConnected ? 'Connected' : 'Disconnected'}
+            </div>
+            <div className="text-gray-300 mb-1 truncate">
+              ID: {MY_PLAYER_ID}
+            </div>
+            <div className="text-gray-300 mb-1 truncate">
+              Room: {roomId}
+            </div>
+            <div className="text-gray-300 mb-1 truncate">
+              Status: {roomState?.status || 'unknown'}
+            </div>
+            <div className="text-gray-300 mb-2 truncate text-xs">
+              TS: {roomState?.timestamp ? new Date(roomState.timestamp).toLocaleTimeString() + '.' + (roomState.timestamp % 1000) : 'none'}
+            </div>
+            <div className="text-gray-400 mb-2 border-t border-gray-700 pt-2">
+              {socketEvents.length === 0 ? 'No events' : socketEvents.map((e, i) => (
+                <div key={i} className="text-gray-300">
+                  <span className="text-gray-500">{e.time}</span> {e.event}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
