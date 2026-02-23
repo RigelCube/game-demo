@@ -1,33 +1,40 @@
-import { useState, useEffect, useRef } from "react";
-import { io, Socket } from "socket.io-client";
+import { useState, useEffect, useRef, memo } from "react";
 import { Peer } from "peerjs";
+import type { SeatView, RoomStateView, GameResult } from "./types";
+import { socket } from "./services/socketManager";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
-interface SeatView {
-  seatIndex: 0 | 1;
-  playerId: string;
-  name: string;
-  balance: number;
-  wins: number;
-  losses: number;
-  ready: boolean;
-  bet: number;
-  online: boolean;
-  peerId?: string;
-}
-
-interface RoomStateView {
-  seats: [SeatView | null, SeatView | null];
-  status: 'waiting' | 'flipping' | 'result';
-  timestamp: number;
-}
-
-const FRONT_SERVER_URL = process.env.BUN_PUBLIC_FRONT_SERVER_URL;
-const BET_SERVER_URL = process.env.BUN_PUBLIC_BET_SERVER_URL
-const RTC_SERVER_HOST = process.env.BUN_PUBLIC_RTC_SERVER_HOST
+// Environment variables
+const BET_SERVER_URL = process.env.BUN_PUBLIC_BET_SERVER_URL;
+const RTC_SERVER_HOST = process.env.BUN_PUBLIC_RTC_SERVER_HOST;
 const RTC_SERVER_PORT = process.env.BUN_PUBLIC_RTC_SERVER_PORT as any as number;
 const TURN_URLS = process.env.BUN_PUBLIC_TURN_URLS || '';
 const TURN_USERNAME = process.env.BUN_PUBLIC_TURN_USERNAME;
 const TURN_CREDENTIAL = process.env.BUN_PUBLIC_TURN_CREDENTIAL;
+
+// Constants
+const VIDEO_CONSTRAINTS = {
+  video: { width: { max: 640 }, height: { max: 480 }, frameRate: { max: 25 } },
+  audio: true
+};
+const HEARTBEAT_INTERVAL = 2500;
+const HEARTBEAT_TIMEOUT = 4000;
+const UI_TEXT = {
+  CONNECTING: 'Connecting to room...',
+  WAITING_OPPONENT: 'WAITING FOR OPPONENT...',
+  DISCONNECTED: 'DISCONNECTED',
+  RECONNECTING: 'Reconnecting...',
+  READY: '✓ READY',
+  NOT_READY: '○ NOT READY',
+  READY_PROMPT: 'READY?',
+  SPINNING: '🪙 SPINNING...',
+  WINS: 'WINS!',
+};
+
+// Helpers
+async function getLocalStream(): Promise<MediaStream> {
+  return navigator.mediaDevices.getUserMedia(VIDEO_CONSTRAINTS);
+}
 
 function generateRandomId(): string {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -44,32 +51,190 @@ function getOrCreatePlayerId(): string {
 
 const MY_PLAYER_ID = getOrCreatePlayerId();
 
-const socket: Socket = io(BET_SERVER_URL, {
-  reconnection: true,
-  reconnectionDelay: 1000,
-  reconnectionDelayMax: 2000,
-  reconnectionAttempts: Infinity
-});
-
-socket.on("connect", () => {
-  console.log("Socket connected:", socket.id);
-});
-
-socket.on("disconnect", () => {
-  console.log("Socket disconnected");
-});
-
-socket.on("connect_error", (error) => {
-  console.error("Socket connection error:", error);
-});
-
 function getRoomIdFromPath(): string {
   const pathname = window.location.pathname;
   const segments = pathname.split('/').filter(Boolean);
   return segments[0] || '';
 }
 
-export function App() {
+interface DebugPanelProps {
+  showDebug: boolean;
+  setShowDebug: (show: boolean) => void;
+  isConnected: boolean;
+  socketId: string | undefined;
+  peerId: string;
+  roomId: string;
+  gameStatus: string;
+  lastUpdate: number | undefined;
+  events: Array<{ time: string; event: string }>;
+}
+
+const DebugPanel = memo(function DebugPanel({ showDebug, setShowDebug, isConnected, socketId, peerId, roomId, gameStatus, lastUpdate, events }: DebugPanelProps) {
+  return (
+    <>
+      <button
+        onClick={() => setShowDebug(!showDebug)}
+        className="fixed bottom-4 right-4 bg-gray-800 text-white px-3 py-2 rounded text-xs font-bold z-40"
+      >
+        {showDebug ? '✕' : '⚙'}
+      </button>
+
+      {showDebug && (
+        <div className="fixed bottom-16 right-4 bg-black/95 border border-gray-600 rounded w-72 max-h-96 overflow-hidden flex flex-col z-40">
+          <div className="bg-gray-800 px-3 py-2 font-bold text-xs">Socket Debug</div>
+          <div className="flex-1 overflow-y-auto p-2 text-xs font-mono">
+            <div className={`mb-1 p-1 rounded ${isConnected ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'}`}>
+              🔌 {isConnected ? 'CONNECTED' : 'DISCONNECTED'}
+            </div>
+            <div className="text-gray-400 mb-2 text-xs">
+              Socket ID: {socketId || 'none'}
+            </div>
+            <div className="text-gray-300 mb-1 truncate">
+              Player: {MY_PLAYER_ID.substring(0, 12)}...
+            </div>
+            <div className="text-gray-300 mb-1 truncate">
+              WebRTC: {peerId.substring(0, 12) || 'connecting'}...
+            </div>
+            <div className="text-gray-300 mb-1 truncate">
+              Room: {roomId}
+            </div>
+            <div className="text-gray-300 mb-1 truncate">
+              Game: {gameStatus || 'unknown'}
+            </div>
+            <div className="text-gray-400 mb-2 text-xs border-t border-gray-700 pt-2">
+              Last update: {lastUpdate ? new Date(lastUpdate).toLocaleTimeString() : 'never'}
+            </div>
+            <div className="text-gray-400 mb-2 border-t border-gray-700 pt-2">
+              {events.length === 0 ? 'No events' : events.map((e, i) => (
+                <div key={i} className="text-gray-300">
+                  <span className="text-gray-500">{e.time}</span> {e.event}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+});
+
+interface RemoteVideoPanelProps {
+  opponentSeat: SeatView | null;
+  remoteVideoRef: React.RefObject<HTMLVideoElement | null>;
+}
+
+const RemoteVideoPanel = memo(function RemoteVideoPanel({ opponentSeat, remoteVideoRef }: RemoteVideoPanelProps) {
+  return (
+    <div className="relative w-full overflow-hidden" style={{ height: '45dvh' }}>
+      <video ref={remoteVideoRef} autoPlay playsInline className={`absolute inset-0 w-full h-full object-cover ${opponentSeat?.online ? '' : 'opacity-50'}`} />
+      {opponentSeat && (
+        <div className="absolute top-4 left-4 bg-black/70 px-3 py-2 rounded text-sm font-bold">
+          {opponentSeat.name}
+        </div>
+      )}
+      {opponentSeat ? (
+        !opponentSeat.online && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+            <div className="text-2xl font-bold">{UI_TEXT.DISCONNECTED}</div>
+          </div>
+        )
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/60">
+          <div className="text-xl font-bold">{UI_TEXT.WAITING_OPPONENT}</div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+interface LocalVideoPanelProps {
+  mySeat: SeatView;
+  myVideoRef: React.RefObject<HTMLVideoElement | null>;
+}
+
+const LocalVideoPanel = memo(function LocalVideoPanel({ mySeat, myVideoRef }: LocalVideoPanelProps) {
+  return (
+    <div className="relative w-full overflow-hidden" style={{ height: '45dvh' }}>
+      <video ref={myVideoRef} autoPlay muted playsInline className="absolute inset-0 w-full h-full object-cover" style={{ transform: 'scaleX(-1)' }} />
+      <div className="absolute bottom-4 left-4 bg-black/70 px-3 py-2 rounded text-sm font-bold">
+        {mySeat.name}
+      </div>
+    </div>
+  );
+});
+
+interface GameControlsProps {
+  isFlipping: boolean;
+  mySeat: SeatView;
+  lastResult: { winnerId: string; winnerName: string } | null;
+  bet: number;
+  setBet: (bet: number) => void;
+  roomId: string;
+  opponentSeat: SeatView | null;
+}
+
+const GameControls = memo(function GameControls({ isFlipping, mySeat, lastResult, bet, setBet, roomId, opponentSeat }: GameControlsProps) {
+  return (
+    <div className="flex flex-col justify-center items-center px-4 gap-1 overflow-hidden" style={{ height: '10dvh' }}>
+      <div className="flex justify-between items-start w-full text-xs">
+        <div className="flex-1">
+          {opponentSeat && (
+            <>
+              <div className="font-bold truncate">{opponentSeat.name}</div>
+              <div className="text-gray-400">💰 {opponentSeat.balance} • W:{opponentSeat.wins} L:{opponentSeat.losses}</div>
+            </>
+          )}
+        </div>
+
+        <div className="flex-1 flex flex-col items-center justify-center gap-1 px-2">
+          {isFlipping ? (
+            <div className="text-lg font-bold text-center">{UI_TEXT.SPINNING}</div>
+          ) : mySeat.ready ? (
+            <>
+              <div className="text-lg font-bold text-center">{UI_TEXT.READY_PROMPT}</div>
+              <button
+                onClick={() => socket.emit("toggle_ready", { roomId, bet: 0 })}
+                className="font-black px-5 py-1 rounded-full text-sm bg-red-500"
+              >
+                CANCEL
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="text-lg font-bold text-center">
+                {lastResult ? `${lastResult.winnerName} ${UI_TEXT.WINS}` : UI_TEXT.READY_PROMPT}
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="1"
+                  max={mySeat.balance}
+                  value={bet}
+                  onChange={(e) => setBet(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="w-20 px-2 py-1 bg-gray-800 border border-gray-600 rounded text-white text-center text-sm"
+                />
+                <button
+                  onClick={() => socket.emit("toggle_ready", { roomId, bet })}
+                  className="font-black px-5 py-1 rounded-full text-sm bg-green-500"
+                >
+                  READY
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="flex-1 text-right">
+          <div className="font-bold truncate">{mySeat.name}</div>
+          <div className="text-gray-400">💰 {mySeat.balance} • W:{mySeat.wins} L:{mySeat.losses}</div>
+          <div className="text-gray-500">{mySeat.ready ? UI_TEXT.READY : UI_TEXT.NOT_READY}</div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+function AppComponent() {
   if(
     BET_SERVER_URL === undefined ||
     RTC_SERVER_HOST === undefined ||
@@ -102,26 +267,12 @@ export function App() {
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<Peer | null>(null);
   const autoJoinedRef = useRef(false);
+  const currentRemoteStreamRef = useRef<MediaStream | null>(null);
 
-  useEffect(() => {
-    // Monitor remote video playback for debugging
-    const videoMonitorInterval = setInterval(() => {
-      if (remoteVideoRef.current && remoteVideoRef.current.srcObject) {
-        const video = remoteVideoRef.current;
-        const tracks = (video.srcObject as MediaStream)?.getTracks() || [];
-        const hasVideo = tracks.some(t => t.kind === 'video' && t.readyState === 'live');
-        console.log(`[Video Monitor] hasVideo=${hasVideo}, time=${video.currentTime?.toFixed(2)}, paused=${video.paused}, readyState=${video.readyState}, networkState=${video.networkState}, seeking=${video.seeking}`);
-
-        // If video element is paused but should be playing, try to resume
-        if (hasVideo && video.paused && !video.seeking) {
-          console.warn("[Video Monitor] Video is paused but should be playing, attempting to resume...");
-          video.play().catch(err => console.error("Failed to resume video:", err));
-        }
-      }
-    }, 5000);
-
-    return () => clearInterval(videoMonitorInterval);
-  }, []);
+  // Helper to log events to debug panel
+  const logEvent = (event: string) => {
+    setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event }]);
+  };
 
   useEffect(() => {
     // 1. Setup PeerJS for WebRTC
@@ -148,7 +299,6 @@ export function App() {
     peerRef.current = peer;
 
     peer.on("open", (id) => {
-      console.log("My Peer ID:", id);
       setPeerId(id);
 
       // Auto-join if we have a roomId from the URL
@@ -156,112 +306,63 @@ export function App() {
       if (pathRoomId && !autoJoinedRef.current) {
         // Ensure socket is connected before emitting
         const attemptJoin = () => {
-          console.log("Attempt join - socket.connected:", socket.connected);
           if (socket.connected) {
-            console.log("Emitting join_room for room:", pathRoomId);
             socket.emit("join_room", { roomId: pathRoomId, playerId: MY_PLAYER_ID, peerId: id });
             autoJoinedRef.current = true;
           } else {
-            console.log("Socket not connected yet, retrying...");
             setTimeout(attemptJoin, 100);
           }
         };
         attemptJoin();
 
         // Start camera
-        navigator.mediaDevices.getUserMedia({
-          video: { width: { max: 640 }, height: { max: 480 }, frameRate: { max: 25 } },
-          audio: true
-        }).then((stream) => {
-          console.log("Initial camera stream acquired, tracks:", stream.getTracks().length);
-          if (myVideoRef.current) {
-            myVideoRef.current.srcObject = stream;
-            myVideoRef.current.play().catch(err => console.error("Initial local video play error:", err));
-          }
-        }).catch((err) => {
-          console.error("Error accessing media devices:", err);
-          setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: `media_error: ${err.message}` }]);
-        });
+        getLocalStream()
+          .then((stream) => {
+            if (myVideoRef.current) {
+              myVideoRef.current.srcObject = stream;
+            }
+          })
+          .catch((err) => {
+            console.error("Error accessing media devices:", err);
+            logEvent(`media_error: ${err.message}`);
+          });
       }
     });
 
     peer.on("call", (call) => {
-      console.log("Incoming call from:", call.peer);
-      navigator.mediaDevices.getUserMedia({
-          video: { width: { max: 640 }, height: { max: 480 }, frameRate: { max: 25 } },
-          audio: true
-        }).then((stream) => {
-        console.log("Local stream for call answer acquired, tracks:", stream.getTracks().length);
-        call.answer(stream);
-        console.log("Call answered with stream");
-        call.on("stream", (remoteStream) => {
-          console.log("Received remote stream from call answer, tracks:", remoteStream.getTracks().length);
-          if (remoteVideoRef.current) {
-            // Clear old stream first
-            if (remoteVideoRef.current.srcObject) {
-              (remoteVideoRef.current.srcObject as MediaStream)?.getTracks().forEach(track => track.stop());
+      getLocalStream()
+        .then((stream) => {
+          call.answer(stream);
+          call.on("stream", (remoteStream) => {
+            // Only set stream if it's different from current one (avoid repeated resets)
+            if (remoteVideoRef.current && currentRemoteStreamRef.current !== remoteStream) {
+              remoteVideoRef.current.srcObject = remoteStream;
+              currentRemoteStreamRef.current = remoteStream;
             }
-
-            remoteVideoRef.current.srcObject = null;
-            setTimeout(() => {
-              if (remoteVideoRef.current) {
-                remoteVideoRef.current.srcObject = remoteStream;
-                remoteVideoRef.current.play().catch(err => console.error("Remote video play error:", err));
-              }
-            }, 100);
-
-            remoteVideoRef.current.onloadedmetadata = () => {
-              console.log("Remote video metadata loaded, playing...");
-            };
-            remoteVideoRef.current.onplaying = () => {
-              console.log("Remote video is now playing");
-            };
-          }
-          // Monitor for stream ended
-          remoteStream.getTracks().forEach(track => {
-            console.log("Remote track:", track.kind, "enabled:", track.enabled, "state:", track.readyState);
-            track.onended = () => {
-              console.warn("Remote video track ended, attempting reconnect...");
-              setTimeout(() => startVideoCall(call.peer), 1000);
-            };
+            // Monitor for stream ended
+            remoteStream.getTracks().forEach(track => {
+              track.onended = () => {
+                startVideoCall(call.peer);
+              };
+            });
           });
+          call.on("error", (err) => {
+            console.error("Call error:", err);
+            logEvent(`call_error: ${err}`);
+          });
+        })
+        .catch((err) => {
+          console.error("Error getting local stream for call:", err);
+          logEvent(`call_answer_error: ${err.message}`);
+          setTimeout(() => {
+            if (call) call.answer();
+          }, 1000);
         });
-        call.on("error", (err) => {
-          console.error("Call error:", err);
-          setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: `call_error: ${err}` }]);
-          setTimeout(() => startVideoCall(call.peer), 2000);
-        });
-        call.on("close", () => {
-          console.log("Call closed");
-        });
-
-        // Monitor connection state for incoming calls
-        call.peerConnection?.addEventListener("connectionstatechange", () => {
-          const state = call.peerConnection?.connectionState;
-          console.log(`[WebRTC Incoming] Connection state: ${state}`);
-          if (state === "failed" || state === "disconnected") {
-            console.warn(`[WebRTC Incoming] Connection ${state}, will reconnect...`);
-            setTimeout(() => startVideoCall(call.peer), 3000);
-          }
-        });
-        call.peerConnection?.addEventListener("iceconnectionstatechange", () => {
-          const state = call.peerConnection?.iceConnectionState;
-          console.log(`[WebRTC Incoming] ICE connection state: ${state}`);
-        });
-      }).catch((err) => {
-        console.error("Error getting local stream for call:", err);
-        setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: `call_answer_error: ${err.message}` }]);
-        setTimeout(() => {
-          if (call) call.answer();
-        }, 1000);
-      });
     });
 
     // 2. Socket Listeners
     socket.on("room_state", (state: RoomStateView) => {
-      console.log("Received room_state:", state);
       lastRoomStateTimeRef.current = Date.now();
-      setSocketEvents((prev: any[]) => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "room_state" }]);
       setRoomState(state);
       setIsConnected(true);
       // Only clear flipping when status returns to waiting
@@ -284,22 +385,16 @@ export function App() {
     });
 
     socket.on("start_flip", ({ winnerId, winnerName }: { winnerId: string; winnerName: string }) => {
-      console.log("start_flip:", winnerId, winnerName);
-      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "start_flip" }]);
       setIsFlipping(true);
       setLastResult({ winnerId, winnerName });
     });
 
     socket.on("join_rejected", ({ reason }: { reason: string }) => {
-      console.error("Join rejected:", reason);
-      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: `join_rejected: ${reason}` }]);
       alert(`Join rejected: ${reason}`);
     });
 
     // Re-join room on reconnect to sync state
     socket.on("reconnect", () => {
-      console.log("Socket reconnected, rejoining room...");
-      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "reconnect" }]);
       setIsConnected(true);
       setIsFlipping(false);
       setLastResult(null);
@@ -307,31 +402,25 @@ export function App() {
       setMySeatIndex(null);
       setBet(10);
       if (peerRef.current?.id && roomId) {
-        console.log("Emitting join_room after reconnect");
         socket.emit("join_room", { roomId, playerId: MY_PLAYER_ID, peerId: peerRef.current.id });
       }
     });
 
     socket.on("connect", () => {
-      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "connect" }]);
       setIsConnected(true);
     });
 
     socket.on("disconnect", () => {
-      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "disconnect" }]);
       setIsConnected(false);
     });
 
     // Heartbeat: detect if socket is dead even though socket.connected=true
     const heartbeatInterval = setInterval(() => {
       const timeSinceLastUpdate = Date.now() - lastRoomStateTimeRef.current;
-      // If no room_state for 4+ seconds, socket is probably dead
-      if (lastRoomStateTimeRef.current > 0 && timeSinceLastUpdate > 4000 && isConnected) {
-        console.warn("Heartbeat failed: no room_state for", timeSinceLastUpdate, "ms. Socket likely dead.");
+      if (lastRoomStateTimeRef.current > 0 && timeSinceLastUpdate > HEARTBEAT_TIMEOUT && isConnected) {
         setIsConnected(false);
-        setSocketEvents((prev: any[]) => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "heartbeat_fail" }]);
       }
-    }, 2500);
+    }, HEARTBEAT_INTERVAL);
 
     return () => {
       clearInterval(heartbeatInterval);
@@ -346,81 +435,39 @@ export function App() {
   }, []);
 
   const startVideoCall = (remotePeerId: string) => {
-    console.log("Starting video call to:", remotePeerId);
-    navigator.mediaDevices.getUserMedia({
-          video: { width: { max: 640 }, height: { max: 480 }, frameRate: { max: 25 } },
-          audio: true
-        }).then((stream) => {
-      console.log("Local stream acquired, tracks:", stream.getTracks().length);
-      if (myVideoRef.current) {
-        myVideoRef.current.srcObject = stream;
-        myVideoRef.current.play().catch(err => console.error("Local video play error:", err));
-      }
-      const call = peerRef.current?.call(remotePeerId, stream);
-      console.log("Call initiated");
-      call?.on("stream", (remoteStream) => {
-        console.log("Received remote stream, tracks:", remoteStream.getTracks().length);
-        if (remoteVideoRef.current) {
-          // Clear old stream first
-          if (remoteVideoRef.current.srcObject) {
-            (remoteVideoRef.current.srcObject as MediaStream)?.getTracks().forEach(track => track.stop());
+    getLocalStream()
+      .then((stream) => {
+        if (myVideoRef.current) {
+          myVideoRef.current.srcObject = stream;
+        }
+        const call = peerRef.current?.call(remotePeerId, stream);
+        call?.on("stream", (remoteStream) => {
+          if (remoteVideoRef.current && currentRemoteStreamRef.current !== remoteStream) {
+            remoteVideoRef.current.srcObject = remoteStream;
+            currentRemoteStreamRef.current = remoteStream;
           }
-
-          remoteVideoRef.current.srcObject = null;
-          setTimeout(() => {
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = remoteStream;
-              remoteVideoRef.current.play().catch(err => console.error("Remote video play error:", err));
-            }
-          }, 100);
-
-          remoteVideoRef.current.onloadedmetadata = () => {
-            console.log("Remote video metadata loaded, playing...");
-          };
-          remoteVideoRef.current.onplaying = () => {
-            console.log("Remote video is now playing");
-          };
-        }
-        // Monitor tracks for disconnection
-        remoteStream.getTracks().forEach(track => {
-          console.log("Remote track:", track.kind, "enabled:", track.enabled, "state:", track.readyState);
-          track.onended = () => {
-            console.warn("Remote video track ended, reconnecting...");
-            setTimeout(() => startVideoCall(remotePeerId), 2000);
-          };
+          remoteStream.getTracks().forEach(track => {
+            track.onended = () => {
+              startVideoCall(remotePeerId);
+            };
+          });
         });
+        call?.on("error", (err) => {
+          console.error("Call error:", err);
+          logEvent(`call_error: ${err}`);
+        });
+      })
+      .catch((err) => {
+        console.error("Error starting video call:", err);
+        logEvent(`getUserMedia_error: ${err.message}`);
       });
-      call?.on("error", (err) => {
-        console.error("Call error:", err);
-        setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: `call_error: ${err}` }]);
-        setTimeout(() => startVideoCall(remotePeerId), 2000);
-      });
-
-      // Monitor connection state
-      call?.peerConnection?.addEventListener("connectionstatechange", () => {
-        const state = call.peerConnection?.connectionState;
-        console.log(`[WebRTC] Connection state: ${state}`);
-        if (state === "failed" || state === "disconnected") {
-          console.warn(`[WebRTC] Connection ${state}, will reconnect...`);
-          setTimeout(() => startVideoCall(remotePeerId), 3000);
-        }
-      });
-      call?.peerConnection?.addEventListener("iceconnectionstatechange", () => {
-        const state = call.peerConnection?.iceConnectionState;
-        console.log(`[WebRTC] ICE connection state: ${state}`);
-      });
-    }).catch((err) => {
-      console.error("Error starting video call:", err);
-      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: `getUserMedia_error: ${err.message}` }]);
-      setTimeout(() => startVideoCall(remotePeerId), 2000);
-    });
   };
 
   if (!joined || !roomState) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-[#1a1a1a] text-white">
         <div className="text-center">
-          <div className="text-2xl mb-4">Connecting to room...</div>
+          <div className="text-2xl mb-4">{UI_TEXT.CONNECTING}</div>
           <div className="text-gray-400">{roomId}</div>
         </div>
       </div>
@@ -436,145 +483,45 @@ export function App() {
       {!isConnected && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
           <div className="text-center">
-            <div className="text-2xl font-bold mb-4">Reconnecting...</div>
+            <div className="text-2xl font-bold mb-4">{UI_TEXT.RECONNECTING}</div>
             <div className="animate-spin inline-block w-8 h-8 border-4 border-gray-600 border-t-white rounded-full"></div>
           </div>
         </div>
       )}
 
-      {/* Opponent Video (Top 0–45%) */}
-      <div className="relative w-full overflow-hidden" style={{ height: '45dvh' }}>
-        <video ref={remoteVideoRef} autoPlay playsInline className={`absolute inset-0 w-full h-full object-cover ${opponentSeat?.online ? '' : 'opacity-50'}`} />
-        {opponentSeat && (
-          <div className="absolute top-4 left-4 bg-black/70 px-3 py-2 rounded text-sm font-bold">
-            {opponentSeat.name}
-          </div>
-        )}
-        {opponentSeat ? (
-          !opponentSeat.online && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-              <div className="text-2xl font-bold">DISCONNECTED</div>
-            </div>
-          )
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/60">
-            <div className="text-xl font-bold">WAITING FOR OPPONENT...</div>
-          </div>
-        )}
-      </div>
+      <RemoteVideoPanel opponentSeat={opponentSeat} remoteVideoRef={remoteVideoRef} />
 
-      {/* Middle Controls (45–55%) */}
-      <div className="flex flex-col justify-center items-center px-4 gap-1 overflow-hidden" style={{ height: '10dvh' }}>
-        {/* Player Info Row */}
-        <div className="flex justify-between items-start w-full text-xs">
-          <div className="flex-1">
-            {opponentSeat && (
-              <>
-                <div className="font-bold truncate">{opponentSeat.name}</div>
-                <div className="text-gray-400">💰 {opponentSeat.balance} • W:{opponentSeat.wins} L:{opponentSeat.losses}</div>
-                <div className="text-gray-500">{opponentSeat.ready ? '✓ READY' : '○ NOT READY'}</div>
-              </>
-            )}
-          </div>
+      <GameControls
+        isFlipping={isFlipping}
+        mySeat={mySeat}
+        lastResult={lastResult}
+        bet={bet}
+        setBet={setBet}
+        roomId={roomId}
+        opponentSeat={opponentSeat}
+      />
 
-          {/* Game Status + Controls */}
-          <div className="flex-1 flex flex-col items-center justify-center gap-1 px-2">
-            {isFlipping ? (
-              <div className="text-lg font-bold text-center">🪙 SPINNING...</div>
-            ) : mySeat.ready ? (
-              <>
-                <div className="text-lg font-bold text-center">READY?</div>
-                <button
-                  onClick={() => socket.emit("toggle_ready", { roomId, bet })}
-                  className="font-black px-5 py-1 rounded-full text-sm bg-red-500"
-                >
-                  CANCEL
-                </button>
-              </>
-            ) : (
-              <>
-                <div className="text-lg font-bold text-center">
-                  {lastResult ? `${lastResult.winnerName} WINS!` : "READY?"}
-                </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="1"
-                    max={mySeat.balance}
-                    value={bet}
-                    onChange={(e) => setBet(Math.max(1, parseInt(e.target.value) || 1))}
-                    className="w-20 px-2 py-1 bg-gray-800 border border-gray-600 rounded text-white text-center text-sm"
-                  />
-                  <button
-                    onClick={() => socket.emit("toggle_ready", { roomId, bet })}
-                    className="font-black px-5 py-1 rounded-full text-sm bg-green-500"
-                  >
-                    READY
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
+      <LocalVideoPanel mySeat={mySeat} myVideoRef={myVideoRef} />
 
-          <div className="flex-1 text-right">
-            <div className="font-bold truncate">{mySeat.name}</div>
-            <div className="text-gray-400">💰 {mySeat.balance} • W:{mySeat.wins} L:{mySeat.losses}</div>
-            <div className="text-gray-500">{mySeat.ready ? '✓ READY' : '○ NOT READY'}</div>
-          </div>
-        </div>
-      </div>
-
-      {/* My Video (Bottom 55–100%) */}
-      <div className="relative w-full overflow-hidden" style={{ height: '45dvh' }}>
-        <video ref={myVideoRef} autoPlay muted playsInline className="absolute inset-0 w-full h-full object-cover" style={{ transform: 'scaleX(-1)' }} />
-        <div className="absolute bottom-4 left-4 bg-black/70 px-3 py-2 rounded text-sm font-bold">
-          {mySeat.name}
-        </div>
-      </div>
-
-      {/* Debug Panel */}
-      <button
-        onClick={() => setShowDebug(!showDebug)}
-        className="fixed bottom-4 right-4 bg-gray-800 text-white px-3 py-2 rounded text-xs font-bold z-40"
-      >
-        {showDebug ? '✕' : '⚙'}
-      </button>
-
-      {showDebug && (
-        <div className="fixed bottom-16 right-4 bg-black/95 border border-gray-600 rounded w-72 max-h-96 overflow-hidden flex flex-col z-40">
-          <div className="bg-gray-800 px-3 py-2 font-bold text-xs">Socket Debug</div>
-          <div className="flex-1 overflow-y-auto p-2 text-xs font-mono">
-            <div className={`mb-1 p-1 rounded ${isConnected ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'}`}>
-              🔌 {isConnected ? 'CONNECTED' : 'DISCONNECTED'}
-            </div>
-            <div className="text-gray-400 mb-2 text-xs">
-              Socket ID: {socket.id || 'none'}
-            </div>
-            <div className="text-gray-300 mb-1 truncate">
-              Player: {MY_PLAYER_ID.substring(0, 12)}...
-            </div>
-            <div className="text-gray-300 mb-1 truncate">
-              WebRTC: {peerId.substring(0, 12) || 'connecting'}...
-            </div>
-            <div className="text-gray-300 mb-1 truncate">
-              Room: {roomId}
-            </div>
-            <div className="text-gray-300 mb-1 truncate">
-              Game: {roomState?.status || 'unknown'}
-            </div>
-            <div className="text-gray-400 mb-2 text-xs border-t border-gray-700 pt-2">
-              Last update: {roomState?.timestamp ? new Date(roomState.timestamp).toLocaleTimeString() : 'never'}
-            </div>
-            <div className="text-gray-400 mb-2 border-t border-gray-700 pt-2">
-              {socketEvents.length === 0 ? 'No events' : socketEvents.map((e, i) => (
-                <div key={i} className="text-gray-300">
-                  <span className="text-gray-500">{e.time}</span> {e.event}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+      <DebugPanel
+        showDebug={showDebug}
+        setShowDebug={setShowDebug}
+        isConnected={isConnected}
+        socketId={socket.id}
+        peerId={peerId}
+        roomId={roomId}
+        gameStatus={roomState?.status || 'unknown'}
+        lastUpdate={roomState?.timestamp}
+        events={socketEvents}
+      />
     </div>
+  );
+}
+
+export function App() {
+  return (
+    <ErrorBoundary>
+      <AppComponent />
+    </ErrorBoundary>
   );
 }
