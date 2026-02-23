@@ -42,6 +42,9 @@ const FRONT_SERVER_URL = process.env.BUN_PUBLIC_FRONT_SERVER_URL;
 const BET_SERVER_URL = process.env.BUN_PUBLIC_BET_SERVER_URL
 const RTC_SERVER_HOST = process.env.BUN_PUBLIC_RTC_SERVER_HOST
 const RTC_SERVER_PORT = process.env.BUN_PUBLIC_RTC_SERVER_PORT as any as number;
+const TURN_URLS = process.env.BUN_PUBLIC_TURN_URLS || '';
+const TURN_USERNAME = process.env.BUN_PUBLIC_TURN_USERNAME;
+const TURN_CREDENTIAL = process.env.BUN_PUBLIC_TURN_CREDENTIAL;
 
 function generateRandomId(): string {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -169,7 +172,24 @@ export function App() {
 
   useEffect(() => {
     const peer = new Peer({ host: RTC_SERVER_HOST, port: RTC_SERVER_PORT,
-      secure: true
+      secure: true,
+      config: {
+        'iceServers': [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' },
+          ...(TURN_URLS && TURN_USERNAME && TURN_CREDENTIAL ?
+            TURN_URLS.split(',').map(url => ({
+              urls: url,
+              username: TURN_USERNAME,
+              credential: TURN_CREDENTIAL,
+            }))
+          : []),
+        ],
+        'sdpSemantics': 'unified-plan'
+      }
     });
     peerRef.current = peer;
 
