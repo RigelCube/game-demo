@@ -443,7 +443,7 @@ export function App() {
         {/* Row 1: gift (right-aligned) */}
         <div className="flex items-center" style={{ gap: rs(12) }}>
           <div className="flex-1" />
-          <div className="circle-btn inactive pointer-events-none" style={{ background: '#FF9500' }}>
+          <div className="circle-btn border-2 border-white/30 inactive pointer-events-none">
             <img src={giftIcon} alt="" style={{ width: rs(28), height: rs(28) }} />
           </div>
         </div>
@@ -473,7 +473,7 @@ export function App() {
             <span>Double</span>
           </div>
           <div className="flex-1" />
-          <div className="circle-btn border-2 border-white/30 inactive pointer-events-none">
+          <div className="circle-btn inactive pointer-events-none" style={{ background: '#FF9500' }}>
             <img src={smileIcon} alt="" style={{ width: rs(28), height: rs(28) }} />
           </div>
         </div>
