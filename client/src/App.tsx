@@ -126,7 +126,7 @@ interface RemoteVideoPanelProps {
 const RemoteVideoPanel = memo(function RemoteVideoPanel({ opponentSeat, remoteVideoRef }: RemoteVideoPanelProps) {
   return (
     <div className="relative w-full overflow-hidden" style={{ height: '45dvh' }}>
-      <video ref={remoteVideoRef} autoPlay playsInline className={`absolute inset-0 w-full h-full object-cover ${opponentSeat?.online ? '' : 'opacity-50'}`} />
+      <video ref={remoteVideoRef} autoPlay muted playsInline className={`absolute inset-0 w-full h-full object-cover ${opponentSeat?.online ? '' : 'opacity-50'}`} />
       {opponentSeat && (
         <div className="absolute top-4 left-4 bg-black/70 px-3 py-2 rounded text-sm font-bold">
           {opponentSeat.name}
@@ -319,7 +319,16 @@ function AppComponent() {
         getLocalStream()
           .then((stream) => {
             if (myVideoRef.current) {
+              const videoTracks = stream.getVideoTracks();
+              if (videoTracks.length === 0) {
+                console.warn("No video tracks in local stream");
+                logEvent("media_error: No video tracks");
+              }
               myVideoRef.current.srcObject = stream;
+              myVideoRef.current.play().catch(err => {
+                console.warn("Local video play failed:", err);
+                logEvent(`local_play_error: ${err.message}`);
+              });
             }
           })
           .catch((err) => {
@@ -334,14 +343,27 @@ function AppComponent() {
         .then((stream) => {
           call.answer(stream);
           call.on("stream", (remoteStream) => {
-            // Only set stream if it's different from current one (avoid repeated resets)
             if (remoteVideoRef.current && currentRemoteStreamRef.current !== remoteStream) {
               remoteVideoRef.current.srcObject = remoteStream;
               currentRemoteStreamRef.current = remoteStream;
+
+              // Handle video playback
+              remoteVideoRef.current.onloadedmetadata = () => {
+                remoteVideoRef.current?.play().catch(err => {
+                  console.warn("Remote video play failed:", err);
+                });
+              };
+
+              // Retry play if it fails
+              remoteVideoRef.current.play().catch(err => {
+                console.warn("Remote video initial play failed, will retry on metadata:", err);
+              });
             }
+
             // Monitor for stream ended
             remoteStream.getTracks().forEach(track => {
               track.onended = () => {
+                console.warn("Remote stream track ended, reconnecting...");
                 startVideoCall(call.peer);
               };
             });
@@ -445,9 +467,23 @@ function AppComponent() {
           if (remoteVideoRef.current && currentRemoteStreamRef.current !== remoteStream) {
             remoteVideoRef.current.srcObject = remoteStream;
             currentRemoteStreamRef.current = remoteStream;
+
+            // Handle video playback
+            remoteVideoRef.current.onloadedmetadata = () => {
+              remoteVideoRef.current?.play().catch(err => {
+                console.warn("Remote video play failed:", err);
+              });
+            };
+
+            // Retry play if it fails
+            remoteVideoRef.current.play().catch(err => {
+              console.warn("Remote video initial play failed, will retry on metadata:", err);
+            });
           }
+
           remoteStream.getTracks().forEach(track => {
             track.onended = () => {
+              console.warn("Remote stream track ended, reconnecting...");
               startVideoCall(remotePeerId);
             };
           });
