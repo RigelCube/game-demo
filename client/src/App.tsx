@@ -268,10 +268,21 @@ function AppComponent() {
   const peerRef = useRef<Peer | null>(null);
   const autoJoinedRef = useRef(false);
   const currentRemoteStreamRef = useRef<MediaStream | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
 
   // Helper to log events to debug panel
   const logEvent = (event: string) => {
     setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event }]);
+  };
+
+  // Get or create local stream (cached to avoid re-prompting for permissions)
+  const getOrCreateLocalStream = async (): Promise<MediaStream> => {
+    if (localStreamRef.current && localStreamRef.current.active) {
+      return localStreamRef.current;
+    }
+    const stream = await getLocalStream();
+    localStreamRef.current = stream;
+    return stream;
   };
 
   useEffect(() => {
@@ -316,7 +327,7 @@ function AppComponent() {
         attemptJoin();
 
         // Start camera
-        getLocalStream()
+        getOrCreateLocalStream()
           .then((stream) => {
             if (myVideoRef.current) {
               const videoTracks = stream.getVideoTracks();
@@ -324,7 +335,10 @@ function AppComponent() {
                 console.warn("No video tracks in local stream");
                 logEvent("media_error: No video tracks");
               }
-              myVideoRef.current.srcObject = stream;
+              // Only set srcObject if it's different to prevent flickering
+              if (myVideoRef.current.srcObject !== stream) {
+                myVideoRef.current.srcObject = stream;
+              }
               myVideoRef.current.play().catch(err => {
                 console.warn("Local video play failed:", err);
                 logEvent(`local_play_error: ${err.message}`);
@@ -457,9 +471,9 @@ function AppComponent() {
   }, []);
 
   const startVideoCall = (remotePeerId: string) => {
-    getLocalStream()
+    getOrCreateLocalStream()
       .then((stream) => {
-        if (myVideoRef.current) {
+        if (myVideoRef.current && myVideoRef.current.srcObject !== stream) {
           myVideoRef.current.srcObject = stream;
         }
         const call = peerRef.current?.call(remotePeerId, stream);

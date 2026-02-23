@@ -15,4 +15,4 @@ services:
     ports:
       - "9000:9000"
     environment:
-      ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:3030,https://pvp.beawhale.io,https://pvp2.beawhale.io"
+      ALLOWED_ORIGINS: "*"

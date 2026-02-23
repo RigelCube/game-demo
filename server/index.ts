@@ -52,11 +52,11 @@ function generateName(): string {
 
 const io = new Server({
   cors: {
-    origin: ["http://localhost:3000", "http://localhost:3030", "https://pvp.beawhale.io", "https://pvp2.beawhale.io"],
+    origin: true,
     methods: ["GET", "POST"],
     credentials: true
   },
-  pingTimeout: 30000, 
+  pingTimeout: 30000,
   pingInterval: 10000,
 });
 
