@@ -25,6 +25,9 @@ const FRONT_SERVER_URL = process.env.BUN_PUBLIC_FRONT_SERVER_URL;
 const BET_SERVER_URL = process.env.BUN_PUBLIC_BET_SERVER_URL
 const RTC_SERVER_HOST = process.env.BUN_PUBLIC_RTC_SERVER_HOST
 const RTC_SERVER_PORT = process.env.BUN_PUBLIC_RTC_SERVER_PORT as any as number;
+const TURN_URLS = process.env.BUN_PUBLIC_TURN_URLS || '';
+const TURN_USERNAME = process.env.BUN_PUBLIC_TURN_USERNAME;
+const TURN_CREDENTIAL = process.env.BUN_PUBLIC_TURN_CREDENTIAL;
 
 function generateRandomId(): string {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -93,6 +96,7 @@ export function App() {
   const [mySeatIndex, setMySeatIndex] = useState<0 | 1 | null>(null);
   const [bet, setBet] = useState(10);
   const [lastResult, setLastResult] = useState<{ winnerId: string; winnerName: string } | null>(null);
+  const [peerId, setPeerId] = useState<string>('');
 
   const myVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -100,14 +104,52 @@ export function App() {
   const autoJoinedRef = useRef(false);
 
   useEffect(() => {
+    // Monitor remote video playback for debugging
+    const videoMonitorInterval = setInterval(() => {
+      if (remoteVideoRef.current && remoteVideoRef.current.srcObject) {
+        const video = remoteVideoRef.current;
+        const tracks = (video.srcObject as MediaStream)?.getTracks() || [];
+        const hasVideo = tracks.some(t => t.kind === 'video' && t.readyState === 'live');
+        console.log(`[Video Monitor] hasVideo=${hasVideo}, time=${video.currentTime?.toFixed(2)}, paused=${video.paused}, readyState=${video.readyState}, networkState=${video.networkState}, seeking=${video.seeking}`);
+
+        // If video element is paused but should be playing, try to resume
+        if (hasVideo && video.paused && !video.seeking) {
+          console.warn("[Video Monitor] Video is paused but should be playing, attempting to resume...");
+          video.play().catch(err => console.error("Failed to resume video:", err));
+        }
+      }
+    }, 5000);
+
+    return () => clearInterval(videoMonitorInterval);
+  }, []);
+
+  useEffect(() => {
     // 1. Setup PeerJS for WebRTC
-    const peer = new Peer({ host: RTC_SERVER_HOST, port: RTC_SERVER_PORT, 
-      secure: true
+    const peer = new Peer({ host: RTC_SERVER_HOST, port: RTC_SERVER_PORT,
+      secure: true,
+    config: {
+        'iceServers': [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            ...(TURN_URLS && TURN_USERNAME && TURN_CREDENTIAL ?
+              TURN_URLS.split(',').map(url => ({
+                urls: url,
+                username: TURN_USERNAME,
+                credential: TURN_CREDENTIAL,
+              }))
+            : []),
+        ],
+        'sdpSemantics': 'unified-plan'
+    }
     });
     peerRef.current = peer;
 
     peer.on("open", (id) => {
       console.log("My Peer ID:", id);
+      setPeerId(id);
 
       // Auto-join if we have a roomId from the URL
       const pathRoomId = getRoomIdFromPath();
@@ -127,18 +169,91 @@ export function App() {
         attemptJoin();
 
         // Start camera
-        navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then((stream) => {
-          if (myVideoRef.current) myVideoRef.current.srcObject = stream;
-        }).catch((err) => console.error("Error accessing media devices:", err));
+        navigator.mediaDevices.getUserMedia({
+          video: { width: { max: 640 }, height: { max: 480 }, frameRate: { max: 25 } },
+          audio: true
+        }).then((stream) => {
+          console.log("Initial camera stream acquired, tracks:", stream.getTracks().length);
+          if (myVideoRef.current) {
+            myVideoRef.current.srcObject = stream;
+            myVideoRef.current.play().catch(err => console.error("Initial local video play error:", err));
+          }
+        }).catch((err) => {
+          console.error("Error accessing media devices:", err);
+          setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: `media_error: ${err.message}` }]);
+        });
       }
     });
 
     peer.on("call", (call) => {
-      navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then((stream) => {
+      console.log("Incoming call from:", call.peer);
+      navigator.mediaDevices.getUserMedia({
+          video: { width: { max: 640 }, height: { max: 480 }, frameRate: { max: 25 } },
+          audio: true
+        }).then((stream) => {
+        console.log("Local stream for call answer acquired, tracks:", stream.getTracks().length);
         call.answer(stream);
+        console.log("Call answered with stream");
         call.on("stream", (remoteStream) => {
-          if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
+          console.log("Received remote stream from call answer, tracks:", remoteStream.getTracks().length);
+          if (remoteVideoRef.current) {
+            // Clear old stream first
+            if (remoteVideoRef.current.srcObject) {
+              (remoteVideoRef.current.srcObject as MediaStream)?.getTracks().forEach(track => track.stop());
+            }
+
+            remoteVideoRef.current.srcObject = null;
+            setTimeout(() => {
+              if (remoteVideoRef.current) {
+                remoteVideoRef.current.srcObject = remoteStream;
+                remoteVideoRef.current.play().catch(err => console.error("Remote video play error:", err));
+              }
+            }, 100);
+
+            remoteVideoRef.current.onloadedmetadata = () => {
+              console.log("Remote video metadata loaded, playing...");
+            };
+            remoteVideoRef.current.onplaying = () => {
+              console.log("Remote video is now playing");
+            };
+          }
+          // Monitor for stream ended
+          remoteStream.getTracks().forEach(track => {
+            console.log("Remote track:", track.kind, "enabled:", track.enabled, "state:", track.readyState);
+            track.onended = () => {
+              console.warn("Remote video track ended, attempting reconnect...");
+              setTimeout(() => startVideoCall(call.peer), 1000);
+            };
+          });
         });
+        call.on("error", (err) => {
+          console.error("Call error:", err);
+          setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: `call_error: ${err}` }]);
+          setTimeout(() => startVideoCall(call.peer), 2000);
+        });
+        call.on("close", () => {
+          console.log("Call closed");
+        });
+
+        // Monitor connection state for incoming calls
+        call.peerConnection?.addEventListener("connectionstatechange", () => {
+          const state = call.peerConnection?.connectionState;
+          console.log(`[WebRTC Incoming] Connection state: ${state}`);
+          if (state === "failed" || state === "disconnected") {
+            console.warn(`[WebRTC Incoming] Connection ${state}, will reconnect...`);
+            setTimeout(() => startVideoCall(call.peer), 3000);
+          }
+        });
+        call.peerConnection?.addEventListener("iceconnectionstatechange", () => {
+          const state = call.peerConnection?.iceConnectionState;
+          console.log(`[WebRTC Incoming] ICE connection state: ${state}`);
+        });
+      }).catch((err) => {
+        console.error("Error getting local stream for call:", err);
+        setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: `call_answer_error: ${err.message}` }]);
+        setTimeout(() => {
+          if (call) call.answer();
+        }, 1000);
       });
     });
 
@@ -231,12 +346,73 @@ export function App() {
   }, []);
 
   const startVideoCall = (remotePeerId: string) => {
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then((stream) => {
-      if (myVideoRef.current) myVideoRef.current.srcObject = stream;
+    console.log("Starting video call to:", remotePeerId);
+    navigator.mediaDevices.getUserMedia({
+          video: { width: { max: 640 }, height: { max: 480 }, frameRate: { max: 25 } },
+          audio: true
+        }).then((stream) => {
+      console.log("Local stream acquired, tracks:", stream.getTracks().length);
+      if (myVideoRef.current) {
+        myVideoRef.current.srcObject = stream;
+        myVideoRef.current.play().catch(err => console.error("Local video play error:", err));
+      }
       const call = peerRef.current?.call(remotePeerId, stream);
+      console.log("Call initiated");
       call?.on("stream", (remoteStream) => {
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
+        console.log("Received remote stream, tracks:", remoteStream.getTracks().length);
+        if (remoteVideoRef.current) {
+          // Clear old stream first
+          if (remoteVideoRef.current.srcObject) {
+            (remoteVideoRef.current.srcObject as MediaStream)?.getTracks().forEach(track => track.stop());
+          }
+
+          remoteVideoRef.current.srcObject = null;
+          setTimeout(() => {
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = remoteStream;
+              remoteVideoRef.current.play().catch(err => console.error("Remote video play error:", err));
+            }
+          }, 100);
+
+          remoteVideoRef.current.onloadedmetadata = () => {
+            console.log("Remote video metadata loaded, playing...");
+          };
+          remoteVideoRef.current.onplaying = () => {
+            console.log("Remote video is now playing");
+          };
+        }
+        // Monitor tracks for disconnection
+        remoteStream.getTracks().forEach(track => {
+          console.log("Remote track:", track.kind, "enabled:", track.enabled, "state:", track.readyState);
+          track.onended = () => {
+            console.warn("Remote video track ended, reconnecting...");
+            setTimeout(() => startVideoCall(remotePeerId), 2000);
+          };
+        });
       });
+      call?.on("error", (err) => {
+        console.error("Call error:", err);
+        setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: `call_error: ${err}` }]);
+        setTimeout(() => startVideoCall(remotePeerId), 2000);
+      });
+
+      // Monitor connection state
+      call?.peerConnection?.addEventListener("connectionstatechange", () => {
+        const state = call.peerConnection?.connectionState;
+        console.log(`[WebRTC] Connection state: ${state}`);
+        if (state === "failed" || state === "disconnected") {
+          console.warn(`[WebRTC] Connection ${state}, will reconnect...`);
+          setTimeout(() => startVideoCall(remotePeerId), 3000);
+        }
+      });
+      call?.peerConnection?.addEventListener("iceconnectionstatechange", () => {
+        const state = call.peerConnection?.iceConnectionState;
+        console.log(`[WebRTC] ICE connection state: ${state}`);
+      });
+    }).catch((err) => {
+      console.error("Error starting video call:", err);
+      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: `getUserMedia_error: ${err.message}` }]);
+      setTimeout(() => startVideoCall(remotePeerId), 2000);
     });
   };
 
@@ -376,6 +552,9 @@ export function App() {
             </div>
             <div className="text-gray-300 mb-1 truncate">
               Player: {MY_PLAYER_ID.substring(0, 12)}...
+            </div>
+            <div className="text-gray-300 mb-1 truncate">
+              WebRTC: {peerId.substring(0, 12) || 'connecting'}...
             </div>
             <div className="text-gray-300 mb-1 truncate">
               Room: {roomId}
