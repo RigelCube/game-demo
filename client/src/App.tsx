@@ -78,6 +78,7 @@ export function App() {
   const [isConnected, setIsConnected] = useState(socket.connected);
   const [showDebug, setShowDebug] = useState(false);
   const [socketEvents, setSocketEvents] = useState<Array<{ time: string; event: string }>>([]);
+  const lastRoomStateTimeRef = useRef<number>(0);;
   const [roomId] = useState<string>(() => {
     const pathRoomId = getRoomIdFromPath();
     if (!pathRoomId) {
@@ -144,8 +145,10 @@ export function App() {
     // 2. Socket Listeners
     socket.on("room_state", (state: RoomStateView) => {
       console.log("Received room_state:", state);
-      setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "room_state" }]);
+      lastRoomStateTimeRef.current = Date.now();
+      setSocketEvents((prev: any[]) => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "room_state" }]);
       setRoomState(state);
+      setIsConnected(true);
       // Only clear flipping when status returns to waiting
       if (state.status === 'waiting') {
         setIsFlipping(false);
@@ -180,6 +183,7 @@ export function App() {
 
     // Re-join room on reconnect to sync state
     socket.on("reconnect", () => {
+      console.log("Socket reconnected, rejoining room...");
       setSocketEvents(prev => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "reconnect" }]);
       setIsConnected(true);
       setIsFlipping(false);
@@ -188,6 +192,7 @@ export function App() {
       setMySeatIndex(null);
       setBet(10);
       if (peerRef.current?.id && roomId) {
+        console.log("Emitting join_room after reconnect");
         socket.emit("join_room", { roomId, playerId: MY_PLAYER_ID, peerId: peerRef.current.id });
       }
     });
@@ -202,7 +207,19 @@ export function App() {
       setIsConnected(false);
     });
 
+    // Heartbeat: detect if socket is dead even though socket.connected=true
+    const heartbeatInterval = setInterval(() => {
+      const timeSinceLastUpdate = Date.now() - lastRoomStateTimeRef.current;
+      // If no room_state for 4+ seconds, socket is probably dead
+      if (lastRoomStateTimeRef.current > 0 && timeSinceLastUpdate > 4000 && isConnected) {
+        console.warn("Heartbeat failed: no room_state for", timeSinceLastUpdate, "ms. Socket likely dead.");
+        setIsConnected(false);
+        setSocketEvents((prev: any[]) => [...prev.slice(-19), { time: new Date().toLocaleTimeString(), event: "heartbeat_fail" }]);
+      }
+    }, 2500);
+
     return () => {
+      clearInterval(heartbeatInterval);
       socket.off("room_state");
       socket.off("start_flip");
       socket.off("join_rejected");
@@ -348,23 +365,26 @@ export function App() {
       </button>
 
       {showDebug && (
-        <div className="fixed bottom-16 right-4 bg-black/95 border border-gray-600 rounded w-64 max-h-80 overflow-hidden flex flex-col z-40">
-          <div className="bg-gray-800 px-3 py-2 font-bold text-xs">Socket Events</div>
+        <div className="fixed bottom-16 right-4 bg-black/95 border border-gray-600 rounded w-72 max-h-96 overflow-hidden flex flex-col z-40">
+          <div className="bg-gray-800 px-3 py-2 font-bold text-xs">Socket Debug</div>
           <div className="flex-1 overflow-y-auto p-2 text-xs font-mono">
-            <div className={`mb-1 ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
-              Status: {isConnected ? 'Connected' : 'Disconnected'}
+            <div className={`mb-1 p-1 rounded ${isConnected ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'}`}>
+              🔌 {isConnected ? 'CONNECTED' : 'DISCONNECTED'}
+            </div>
+            <div className="text-gray-400 mb-2 text-xs">
+              Socket ID: {socket.id || 'none'}
             </div>
             <div className="text-gray-300 mb-1 truncate">
-              ID: {MY_PLAYER_ID}
+              Player: {MY_PLAYER_ID.substring(0, 12)}...
             </div>
             <div className="text-gray-300 mb-1 truncate">
               Room: {roomId}
             </div>
             <div className="text-gray-300 mb-1 truncate">
-              Status: {roomState?.status || 'unknown'}
+              Game: {roomState?.status || 'unknown'}
             </div>
-            <div className="text-gray-300 mb-2 truncate text-xs">
-              TS: {roomState?.timestamp ? new Date(roomState.timestamp).toLocaleTimeString() + '.' + (roomState.timestamp % 1000) : 'none'}
+            <div className="text-gray-400 mb-2 text-xs border-t border-gray-700 pt-2">
+              Last update: {roomState?.timestamp ? new Date(roomState.timestamp).toLocaleTimeString() : 'never'}
             </div>
             <div className="text-gray-400 mb-2 border-t border-gray-700 pt-2">
               {socketEvents.length === 0 ? 'No events' : socketEvents.map((e, i) => (
