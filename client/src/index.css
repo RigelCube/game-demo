@@ -2,49 +2,198 @@
 
 @layer base {
   :root {
-    @apply text-[rgba(255,255,255,0.87)] bg-[#242424] font-sans;
+    @apply text-[rgba(255,255,255,0.87)] bg-black font-sans;
   }
 
   body {
-    @apply grid place-items-center min-w-[320px] min-h-screen relative m-0;
+    @apply m-0 p-0 overflow-hidden;
   }
 }
 
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  opacity: 0.05;
-  background: url("./logo.svg");
-  background-size: 256px;
-  transform: rotate(-12deg) scale(1.35);
-  animation: slide 30s linear infinite;
+/* ─── Glass pill badge ─── */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  font-size: 16px;
+  font-weight: 500;
+  color: white;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  white-space: nowrap;
+}
+
+/* ─── Larger pill for bottom action buttons ─── */
+.pill-lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 22px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  font-size: 17px;
+  font-weight: 500;
+  color: white;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  white-space: nowrap;
+}
+
+.pill-lg.pill-active {
+  background: rgba(255, 255, 255, 0.38);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+/* ─── Player name label (white bg, black text) ─── */
+.name-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 16px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.88);
+  font-size: 15px;
+  font-weight: 500;
+  color: #0f0d26;
+  white-space: nowrap;
+}
+
+/* ─── Bet input (center-right, below self name) ─── */
+.bet-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.bet-pill input {
+  width: 48px;
+  background: transparent;
+  color: white;
+  text-align: center;
+  outline: none;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+/* ─── Chat input bar ─── */
+.chat-input-bar {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  height: 52px;
+  padding: 0 20px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 16px;
+  color: white !important;
+  outline: none;
+  -webkit-text-fill-color: white;
+}
+
+.chat-input-bar::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+  -webkit-text-fill-color: rgba(255, 255, 255, 0.5);
+}
+
+/* ─── Inactive: only dim bg, NOT text ─── */
+.inactive {
   pointer-events: none;
 }
 
-@keyframes slide {
-  from {
-    background-position: 0 0;
-  }
-  to {
-    background-position: 256px 224px;
-  }
+/* ─── Circle button ─── */
+.circle-btn {
+  width: 60px;
+  height: 60px;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  flex-shrink: 0;
 }
 
-@keyframes spin {
-  from {
-    transform: rotate(0);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+/* ─── Coin ─── */
+.coin-wrapper {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.coin-wrapper:active img {
+  transform: scale(0.93);
+}
+
+/* ─── Animations ─── */
+@keyframes coinFlip {
+  0% { transform: rotateY(0deg); }
+  100% { transform: rotateY(1800deg); }
+}
+
+@keyframes coinIdle {
+  0%, 100% { transform: rotateY(0deg); }
+  50% { transform: rotateY(15deg); }
+}
+
+@keyframes resultPop {
+  0% { transform: scale(0.5); opacity: 0; }
+  50% { transform: scale(1.15); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* ─── Speech bubble (absolutely positioned above avatar, NO slide) ─── */
+.speech-bubble {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  margin-left: -38px;
+  width: 76px;
+  text-align: center;
+  background: white;
+  color: #0f0d26;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 6px 0;
+  border-radius: 14px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  visibility: hidden;
+  opacity: 0;
+}
+
+.speech-bubble.visible {
+  visibility: visible;
+  opacity: 1;
+}
+
+.speech-bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 7px solid white;
+}
+
+/* ─── Text shadow ─── */
+.text-shadow {
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7), 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 
 @media (prefers-reduced-motion) {
-  *,
-  ::before,
-  ::after {
+  *, ::before, ::after {
     animation: none !important;
   }
 }
