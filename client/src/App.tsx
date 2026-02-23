@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
 import { Peer } from "peerjs";
 import { useRive } from "@rive-app/react-canvas";
@@ -11,6 +11,13 @@ import rightAvatarImg from "../images/right.svg";
 import smileIcon from "../images/smile.svg";
 import giftIcon from "../images/gift.svg";
 import sendIcon from "../images/send.svg";
+import chatHeadImg from "../images/chat-head.svg";
+
+interface ChatMessage {
+  id: number;
+  text: string;
+  fading: boolean;
+}
 
 interface SeatView {
   seatIndex: 0 | 1;
@@ -139,11 +146,26 @@ export function App() {
   const [lastResult, setLastResult] = useState<{ winnerId: string; winnerName: string } | null>(null);
   const [activeAction, setActiveAction] = useState<null | 'ready' | 'rematch' | 'double'>(null);
   const [flipCount, setFlipCount] = useState(0);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const chatIdRef = useRef(0);
 
   const myVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<Peer | null>(null);
   const autoJoinedRef = useRef(false);
+
+  const sendChatMessage = useCallback(() => {
+    const text = chatInput.trim();
+    if (!text) return;
+    const id = ++chatIdRef.current;
+    setChatMessages(prev => [...prev, { id, text, fading: false }]);
+    setChatInput('');
+    // Start fade after 8s
+    setTimeout(() => setChatMessages(prev => prev.map(m => m.id === id ? { ...m, fading: true } : m)), 8000);
+    // Remove after 20s (8s visible + 12s fade)
+    setTimeout(() => setChatMessages(prev => prev.filter(m => m.id !== id)), 20000);
+  }, [chatInput]);
 
   useEffect(() => {
     const peer = new Peer({ host: RTC_SERVER_HOST, port: RTC_SERVER_PORT,
@@ -418,16 +440,30 @@ export function App() {
           </div>
         ) : null}
 
-        {/* Row 1: smiley (right-aligned) */}
+        {/* Row 1: gift (right-aligned) */}
         <div className="flex items-center" style={{ gap: rs(12) }}>
           <div className="flex-1" />
-          <div className="circle-btn border-2 border-white/30 inactive pointer-events-none">
-            <img src={smileIcon} alt="" style={{ width: rs(28), height: rs(28) }} />
+          <div className="circle-btn inactive pointer-events-none" style={{ background: '#FF9500' }}>
+            <img src={giftIcon} alt="" style={{ width: rs(28), height: rs(28) }} />
           </div>
         </div>
 
-        {/* Row 2: Rematch + Double (left) ── gift (right) */}
-        <div className="flex items-center" style={{ gap: rs(12) }}>
+        {/* Row 2: Rematch + Double (left) ── smiley (right) */}
+        <div className="relative flex items-center" style={{ gap: rs(12) }}>
+          {/* Chat messages — absolutely positioned above, no layout impact */}
+          {chatMessages.length > 0 && (
+            <div className="absolute left-0 right-0 flex flex-col" style={{ bottom: `calc(100% + ${rs(8)})`, gap: rs(6) }}>
+              {chatMessages.map(msg => (
+                <div
+                  key={msg.id}
+                  className={`chat-message${msg.fading ? ' chat-message-fade' : ''}`}
+                >
+                  <img src={chatHeadImg} alt="" className="chat-message-head" style={{ width: rs(28), height: rs(28) }} />
+                  <span className="chat-message-text">{msg.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className={`pill-lg cursor-pointer ${activeAction === 'rematch' ? 'pill-active' : ''}`} onClick={() => toggleAction('rematch')}>
             <span style={{ color: '#FF9500' }}>▶</span>
             <span>Rematch</span>
@@ -437,8 +473,8 @@ export function App() {
             <span>Double</span>
           </div>
           <div className="flex-1" />
-          <div className="circle-btn inactive pointer-events-none" style={{ background: '#FF9500' }}>
-            <img src={giftIcon} alt="" style={{ width: rs(28), height: rs(28) }} />
+          <div className="circle-btn border-2 border-white/30 inactive pointer-events-none">
+            <img src={smileIcon} alt="" style={{ width: rs(28), height: rs(28) }} />
           </div>
         </div>
 
@@ -448,8 +484,11 @@ export function App() {
             type="text"
             placeholder="Type message..."
             className="chat-input-bar"
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') sendChatMessage(); }}
           />
-          <div className="circle-btn inactive pointer-events-none" style={{ background: '#5856D6' }}>
+          <div className="circle-btn cursor-pointer" style={{ background: '#5856D6' }} onClick={sendChatMessage}>
             <img src={sendIcon} alt="" style={{ width: rs(28), height: rs(28) }} />
           </div>
         </div>

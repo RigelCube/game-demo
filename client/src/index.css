@@ -102,10 +102,16 @@
   border-radius: 9999px;
   background: rgba(255, 255, 255, 0.15);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  font-size: calc(16 * var(--rs));
+  font-size: max(16px, calc(16 * var(--rs)));
   color: white !important;
   outline: none;
   -webkit-text-fill-color: white;
+}
+
+.chat-input-bar:focus,
+.chat-input-bar:not(:placeholder-shown) {
+  background: rgba(0, 0, 0, 0.45);
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 .chat-input-bar::placeholder {
@@ -192,6 +198,33 @@
   border-left: calc(6 * var(--rs-sm)) solid transparent;
   border-right: calc(6 * var(--rs-sm)) solid transparent;
   border-top: calc(7 * var(--rs-sm)) solid white;
+}
+
+/* ─── Chat messages ─── */
+.chat-message {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--rs));
+}
+
+.chat-message-head {
+  flex-shrink: 0;
+}
+
+.chat-message-text {
+  font-size: calc(16 * var(--rs));
+  font-weight: 600;
+  color: white;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+.chat-message-fade {
+  animation: chatFadeOut 12s linear forwards;
+}
+
+@keyframes chatFadeOut {
+  0% { opacity: 1; filter: blur(0); }
+  100% { opacity: 0; filter: blur(4px); }
 }
 
 /* ─── Text shadow ─── */
