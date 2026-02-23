@@ -4,9 +4,9 @@ import { Peer } from "peerjs";
 import { useRive } from "@rive-app/react-canvas";
 
 // Image assets
-import piggyBankImg from "../images/freepik__img3-same-styling-piggy-bank-but-only-one-piggy-ba__93008-2 1.svg";
-import cashImg from "../images/cash 4.svg";
-import leftAvatarImg from "../images/new left.svg";
+import piggyBankImg from "../images/piggy-bank.svg";
+import cashImg from "../images/cash.svg";
+import leftAvatarImg from "../images/avatar-left.svg";
 import rightAvatarImg from "../images/right.svg";
 import smileIcon from "../images/smile.svg";
 import giftIcon from "../images/gift.svg";
@@ -159,7 +159,11 @@ export function App() {
           }
         };
         attemptJoin();
-        navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then((stream) => {
+        navigator.mediaDevices.getUserMedia({ video: {
+          width: { max: 640 },
+          height: { max: 480 },
+          frameRate: { max: 25 }
+        }, audio: true }).then((stream) => {
           if (myVideoRef.current) myVideoRef.current.srcObject = stream;
         }).catch((err) => console.error("Error accessing media devices:", err));
       }
