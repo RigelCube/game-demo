@@ -315,18 +315,18 @@ export function App() {
       <div className="absolute left-0 right-0 z-20 flex justify-end gap-3 pr-4" style={{ top: 'max(10px, env(safe-area-inset-top, 10px))' }}>
         <Pill>
           <img src={piggyBankImg} alt="" className="w-9 h-9" />
-          <span>{mySeat.balance}</span>
+          <span>{bet * 2}</span>
         </Pill>
         <Pill>
           <img src={cashImg} alt="" className="w-9 h-7" />
-          <span><span style={{ color: '#DCDCDC' }}>Total:</span> {opponentSeat ? opponentSeat.balance + mySeat.balance : mySeat.balance}</span>
+          <span><span style={{ color: '#DCDCDC' }}>Total:</span> {mySeat.balance}</span>
         </Pill>
       </div>
 
       {/* ── CENTER: Both players SAME LINE, coin in middle ── */}
 
       {/* Opponent (LEFT) — avatar + name */}
-      {opponentSeat && (
+      {opponentSeat?.online && (
         <div className="absolute z-20 flex flex-col items-center" style={{ top: 'calc(50dvh - 105px)', left: 14 }}>
           <div className="relative">
             <div className={`speech-bubble ${opponentSeat.ready && !isFlipping ? 'visible' : ''}`}>Ready!</div>
@@ -338,17 +338,28 @@ export function App() {
 
       {/* Coin Flip Animation — center (CLICKABLE = toggle ready) */}
       <div
-        className="absolute left-1/2 z-30 coin-wrapper"
+        className="absolute left-1/2 z-30"
         style={{
           top: '50%',
           transform: 'translate(-50%, -50%)',
           width: 800,
           height: 800,
+          pointerEvents: 'none',
         }}
-        onClick={() => toggleAction('ready')}
       >
         <RiveComponent style={{ width: 800, height: 800 }} />
       </div>
+      {/* Clickable area — only the coin center */}
+      <div
+        className="absolute left-1/2 z-30 coin-wrapper"
+        style={{
+          top: '50%',
+          transform: 'translate(-50%, -50%)',
+          width: 150,
+          height: 150,
+        }}
+        onClick={() => toggleAction('ready')}
+      />
 
       {/* Self (RIGHT) — avatar + name */}
       <div className="absolute z-20 flex flex-col items-center" style={{ top: 'calc(50dvh - 99px)', right: 14 }}>
