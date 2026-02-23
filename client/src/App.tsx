@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
 import { Peer } from "peerjs";
+import { useRive } from "@rive-app/react-canvas";
 
 // Image assets
-import coinImg from "../images/Group 1597884292.svg";
 import piggyBankImg from "../images/freepik__img3-same-styling-piggy-bank-but-only-one-piggy-ba__93008-2 1.svg";
 import cashImg from "../images/cash 4.svg";
 import leftAvatarImg from "../images/new left.svg";
@@ -108,6 +108,32 @@ export function App() {
   const [bet, setBet] = useState(10);
   const [lastResult, setLastResult] = useState<{ winnerId: string; winnerName: string } | null>(null);
   const [activeAction, setActiveAction] = useState<null | 'ready' | 'rematch' | 'double'>(null);
+  const [flipCount, setFlipCount] = useState(0);
+
+  const { rive, RiveComponent } = useRive({
+    src: "/coinflip.riv",
+    stateMachines: "State Machine 1",
+    autoplay: true,
+    onStateChange: (event) => {
+      console.log("Rive state changed:", event.data);
+    },
+  });
+
+  const fireFlip = useCallback(() => {
+    if (!rive) return;
+    // Reset state machine to initial state so trigger works again
+    rive.reset({ stateMachines: true });
+    rive.play("State Machine 1");
+    // Fire after a short delay to let the state machine reinitialize
+    setTimeout(() => {
+      const inputs = rive.stateMachineInputs("State Machine 1");
+      if (!inputs) return;
+      const flip = inputs.find(i => i.name === "flip");
+      if (flip) {
+        flip.fire();
+      }
+    }, 50);
+  }, [rive]);
 
   const myVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -151,7 +177,9 @@ export function App() {
     socket.on("room_state", (state: RoomStateView) => {
       console.log("Received room_state:", state);
       setRoomState(state);
-      setIsFlipping(false);
+      if (state.status !== 'flipping') {
+        setIsFlipping(false);
+      }
       const mySeat = state.seats.find(seat => seat && seat.playerId === MY_PLAYER_ID);
       if (mySeat) {
         setMySeatIndex(mySeat.seatIndex);
@@ -167,6 +195,8 @@ export function App() {
 
     socket.on("start_flip", ({ winnerId, winnerName }: { winnerId: string; winnerName: string }) => {
       setIsFlipping(true);
+      setFlipCount(c => c + 1);
+      setActiveAction(null);
       setLastResult({ winnerId, winnerName });
     });
 
@@ -187,6 +217,12 @@ export function App() {
       peer.destroy();
     };
   }, []);
+
+  // Trigger Rive flip via state machine when game starts
+  useEffect(() => {
+    if (flipCount === 0) return;
+    fireFlip();
+  }, [flipCount, fireFlip]);
 
   const startVideoCall = (remotePeerId: string) => {
     navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then((stream) => {
@@ -293,36 +329,25 @@ export function App() {
       {opponentSeat && (
         <div className="absolute z-20 flex flex-col items-center" style={{ top: 'calc(50dvh - 105px)', left: 14 }}>
           <div className="relative">
-            <div className={`speech-bubble ${opponentSeat.ready ? 'visible' : ''}`}>Ready!</div>
+            <div className={`speech-bubble ${opponentSeat.ready && !isFlipping ? 'visible' : ''}`}>Ready!</div>
             <img src={leftAvatarImg} alt="" style={{ width: 130, height: 98 }} draggable={false} />
           </div>
           <span className="name-label" style={{ marginTop: -6 }}>{opponentSeat.name}</span>
         </div>
       )}
 
-      {/* Gold Coin — center (CLICKABLE = toggle ready) */}
+      {/* Coin Flip Animation — center (CLICKABLE = toggle ready) */}
       <div
         className="absolute left-1/2 z-30 coin-wrapper"
         style={{
           top: '50%',
           transform: 'translate(-50%, -50%)',
-          width: 148,
-          height: 148,
+          width: 800,
+          height: 800,
         }}
         onClick={() => toggleAction('ready')}
       >
-        <img
-          src={coinImg}
-          alt="Coin"
-          width={148}
-          height={148}
-          draggable={false}
-          style={{
-            animation: isFlipping
-              ? 'coinFlip 2s ease-in-out'
-              : 'coinIdle 3s ease-in-out infinite',
-          }}
-        />
+        <RiveComponent style={{ width: 800, height: 800 }} />
       </div>
 
       {/* Self (RIGHT) — avatar + name */}

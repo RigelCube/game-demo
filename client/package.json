@@ -9,6 +9,7 @@
     "build": "bun run build.ts"
   },
   "dependencies": {
+    "@rive-app/react-canvas": "^4.27.0",
     "bun-plugin-tailwind": "^0.0.15",
     "peerjs": "^1.5.5",
     "react": "^19",
