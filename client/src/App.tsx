@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { io, Socket } from "socket.io-client";
 import { Peer } from "peerjs";
 import { useRive } from "@rive-app/react-canvas";
@@ -23,6 +23,7 @@ interface SeatView {
   bet: number;
   online: boolean;
   peerId?: string;
+  action?: 'ready' | 'rematch' | 'double';
 }
 
 interface RoomStateView {
@@ -75,6 +76,35 @@ function getRoomIdFromPath(): string {
   return segments[0] || '';
 }
 
+/* Responsive-size helpers: multiply by the --rs / --rs-sm CSS variables */
+const rs = (px: number) => `calc(${px} * var(--rs))`;
+const rsSm = (px: number) => `calc(${px} * var(--rs-sm))`;
+
+/* ─── Coin Flip Animation ─── */
+/* Keyed by flipCount so each flip gets a fresh Rive instance — avoids
+   rive.reset() corrupting the WASM runtime on repeated calls. */
+function CoinFlipAnimation({ shouldFlip }: { shouldFlip: boolean }) {
+  const { rive, RiveComponent } = useRive({
+    src: "/coinflip.riv",
+    stateMachines: "State Machine 1",
+    autoplay: true,
+  });
+
+  useEffect(() => {
+    if (!shouldFlip || !rive) return;
+    const timeout = setTimeout(() => {
+      const inputs = rive.stateMachineInputs("State Machine 1");
+      if (inputs) {
+        const flip = inputs.find(i => i.name === "flip");
+        if (flip) flip.fire();
+      }
+    }, 100);
+    return () => clearTimeout(timeout);
+  }, [rive, shouldFlip]);
+
+  return <RiveComponent style={{ width: rsSm(800), height: rsSm(800) }} />;
+}
+
 /* ─── Glass Pill ─── */
 function Pill({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
@@ -109,31 +139,6 @@ export function App() {
   const [lastResult, setLastResult] = useState<{ winnerId: string; winnerName: string } | null>(null);
   const [activeAction, setActiveAction] = useState<null | 'ready' | 'rematch' | 'double'>(null);
   const [flipCount, setFlipCount] = useState(0);
-
-  const { rive, RiveComponent } = useRive({
-    src: "/coinflip.riv",
-    stateMachines: "State Machine 1",
-    autoplay: true,
-    onStateChange: (event) => {
-      console.log("Rive state changed:", event.data);
-    },
-  });
-
-  const fireFlip = useCallback(() => {
-    if (!rive) return;
-    // Reset state machine to initial state so trigger works again
-    rive.reset({ stateMachines: true });
-    rive.play("State Machine 1");
-    // Fire after a short delay to let the state machine reinitialize
-    setTimeout(() => {
-      const inputs = rive.stateMachineInputs("State Machine 1");
-      if (!inputs) return;
-      const flip = inputs.find(i => i.name === "flip");
-      if (flip) {
-        flip.fire();
-      }
-    }, 50);
-  }, [rive]);
 
   const myVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -188,8 +193,6 @@ export function App() {
       if (mySeat) {
         setMySeatIndex(mySeat.seatIndex);
         setJoined(true);
-        // Clear action when server says not ready
-        if (!mySeat.ready) setActiveAction(null);
       }
       const opponentSeat = state.seats.find(seat => seat && seat.playerId !== MY_PLAYER_ID);
       if (opponentSeat?.peerId && !remoteVideoRef.current?.srcObject) {
@@ -222,12 +225,6 @@ export function App() {
     };
   }, []);
 
-  // Trigger Rive flip via state machine when game starts
-  useEffect(() => {
-    if (flipCount === 0) return;
-    fireFlip();
-  }, [flipCount, fireFlip]);
-
   const startVideoCall = (remotePeerId: string) => {
     navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then((stream) => {
       if (myVideoRef.current) myVideoRef.current.srcObject = stream;
@@ -242,8 +239,8 @@ export function App() {
   if (!joined || !roomState) {
     return (
       <div className="fixed inset-0 bg-black text-white flex flex-col items-center justify-center">
-        <div className="text-2xl text-shadow mb-3">Connecting...</div>
-        <div className="text-white/40 text-sm">{roomId}</div>
+        <div className="text-shadow" style={{ fontSize: rs(24), lineHeight: 1.3, marginBottom: rs(12) }}>Connecting...</div>
+        <div className="text-white/40" style={{ fontSize: rs(14), lineHeight: 1.3 }}>{roomId}</div>
       </div>
     );
   }
@@ -254,22 +251,34 @@ export function App() {
 
   const toggleAction = (action: 'ready' | 'rematch' | 'double') => {
     if (isFlipping) return;
-    setActiveAction(prev => {
-      const wasDouble = prev === 'double';
-      const goingToDouble = action === 'double' && prev !== 'double';
-      const leavingDouble = wasDouble && action !== 'double';
-      const togglingDoubleOff = wasDouble && action === 'double';
 
-      if (goingToDouble) {
-        setBet(b => b * 2);
-      } else if (leavingDouble || togglingDoubleOff) {
-        setBet(b => Math.max(1, Math.floor(b / 2)));
-      }
+    // Compute new state synchronously so we can send the correct values
+    const prev = activeAction;
+    const newAction = prev === action ? null : action;
 
-      if (prev === action) return null; // toggle off
-      return action; // switch to new action
+    const wasDouble = prev === 'double';
+    const goingToDouble = action === 'double' && prev !== 'double';
+    const leavingDouble = wasDouble && action !== 'double';
+    const togglingDoubleOff = wasDouble && action === 'double';
+
+    let newBet = bet;
+    if (goingToDouble) {
+      newBet = bet * 2;
+    } else if (leavingDouble || togglingDoubleOff) {
+      newBet = Math.max(1, Math.floor(bet / 2));
+    }
+
+    setActiveAction(newAction);
+    setBet(newBet);
+
+    // Send explicit ready state (not toggle)
+    const isReady = newAction !== null;
+    socket.emit("toggle_ready", {
+      roomId,
+      bet: isReady ? newBet : 0,
+      ready: isReady,
+      action: isReady ? newAction : undefined,
     });
-    socket.emit("toggle_ready", { roomId, bet: action === 'double' ? bet * 2 : bet });
   };
 
   return (
@@ -288,12 +297,12 @@ export function App() {
         {opponentSeat ? (
           !opponentSeat.online && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-              <div className="text-2xl text-shadow tracking-wider">DISCONNECTED</div>
+              <div className="text-shadow tracking-wider" style={{ fontSize: rs(24), lineHeight: 1.3 }}>DISCONNECTED</div>
             </div>
           )
         ) : (
           <div className="absolute inset-0 flex items-center justify-center">
-            <div className="text-xl tracking-widest text-shadow text-white/80">
+            <div className="tracking-widest text-shadow text-white/80" style={{ fontSize: rs(20), lineHeight: 1.3 }}>
               WAITING FOR OPPONENT...
             </div>
           </div>
@@ -316,13 +325,13 @@ export function App() {
       {/* ═══════════ FLOATING UI LAYER ═══════════ */}
 
       {/* ── TOP RIGHT: Balance + Total pills ── */}
-      <div className="absolute left-0 right-0 z-20 flex justify-end gap-3 pr-4" style={{ top: 'max(10px, env(safe-area-inset-top, 10px))' }}>
+      <div className="absolute left-0 right-0 z-20 flex justify-end" style={{ gap: rs(12), paddingRight: rs(16), top: 'max(10px, env(safe-area-inset-top, 10px))' }}>
         <Pill>
-          <img src={piggyBankImg} alt="" className="w-9 h-9" />
+          <img src={piggyBankImg} alt="" style={{ width: rs(36), height: rs(36) }} />
           <span>{bet * 2}</span>
         </Pill>
         <Pill>
-          <img src={cashImg} alt="" className="w-9 h-7" />
+          <img src={cashImg} alt="" style={{ width: rs(36), height: rs(28) }} />
           <span><span style={{ color: '#DCDCDC' }}>Total:</span> {mySeat.balance}</span>
         </Pill>
       </div>
@@ -331,12 +340,12 @@ export function App() {
 
       {/* Opponent (LEFT) — avatar + name */}
       {opponentSeat?.online && (
-        <div className="absolute z-20 flex flex-col items-center" style={{ top: 'calc(50dvh - 105px)', left: 14 }}>
+        <div className="absolute z-20 flex flex-col items-center" style={{ top: `calc(50dvh - ${rsSm(105)})`, left: rsSm(14) }}>
           <div className="relative">
-            <div className={`speech-bubble ${opponentSeat.ready && !isFlipping ? 'visible' : ''}`}>Ready!</div>
-            <img src={leftAvatarImg} alt="" style={{ width: 130, height: 98 }} draggable={false} />
+            <div className={`speech-bubble ${opponentSeat.ready && !isFlipping ? 'visible' : ''}`}>{opponentSeat.action === 'double' ? 'Double?' : opponentSeat.action === 'rematch' ? 'Rematch?' : 'Ready!'}</div>
+            <img src={leftAvatarImg} alt="" style={{ width: rsSm(130), height: rsSm(98) }} draggable={false} />
           </div>
-          <span className="name-label" style={{ marginTop: -6 }}>{opponentSeat.name}</span>
+          <span className="name-label" style={{ marginTop: rsSm(-6) }}>{opponentSeat.name}</span>
         </div>
       )}
 
@@ -346,12 +355,12 @@ export function App() {
         style={{
           top: '50%',
           transform: 'translate(-50%, -50%)',
-          width: 800,
-          height: 800,
+          width: rsSm(800),
+          height: rsSm(800),
           pointerEvents: 'none',
         }}
       >
-        <RiveComponent style={{ width: 800, height: 800 }} />
+        <CoinFlipAnimation key={flipCount} shouldFlip={flipCount > 0} />
       </div>
       {/* Clickable area — only the coin center */}
       <div
@@ -359,24 +368,24 @@ export function App() {
         style={{
           top: '50%',
           transform: 'translate(-50%, -50%)',
-          width: 150,
-          height: 150,
+          width: rsSm(150),
+          height: rsSm(150),
         }}
         onClick={() => toggleAction('ready')}
       />
 
       {/* Self (RIGHT) — avatar + name */}
-      <div className="absolute z-20 flex flex-col items-center" style={{ top: 'calc(50dvh - 99px)', right: 14 }}>
+      <div className="absolute z-20 flex flex-col items-center" style={{ top: `calc(50dvh - ${rsSm(99)})`, right: rsSm(14) }}>
         <div className="relative">
           {/* "Ready!" bubble — pops up above avatar on coin tap */}
-          <div className={`speech-bubble ${activeAction ? 'visible' : ''}`}>{activeAction === 'double' ? 'Double?' : activeAction === 'rematch' ? 'Rematch?' : 'Ready!'}</div>
-          <img src={rightAvatarImg} alt="" style={{ width: 130, height: 86 }} draggable={false} />
+          <div className={`speech-bubble ${!isFlipping && activeAction ? 'visible' : ''}`}>{activeAction === 'double' ? 'Double?' : activeAction === 'rematch' ? 'Rematch?' : 'Ready!'}</div>
+          <img src={rightAvatarImg} alt="" style={{ width: rsSm(130), height: rsSm(86) }} draggable={false} />
         </div>
         <span className="name-label">{mySeat.name}</span>
-        <div style={{ height: 6 }} />
+        <div style={{ height: rsSm(6) }} />
         {/* Bet input pill (cash icon + editable amount) */}
         <div className="bet-pill">
-          <img src={cashImg} alt="" className="w-10 h-7" />
+          <img src={cashImg} alt="" style={{ width: rs(40), height: rs(28) }} />
           <input
             type="number"
             min="1"
@@ -388,17 +397,19 @@ export function App() {
       </div>
 
       {/* ═══ BOTTOM CONTROLS AREA ═══ */}
-      <div className="absolute bottom-0 left-0 right-0 z-20 flex flex-col gap-3" style={{ padding: '0 14px 14px 14px', paddingBottom: 'max(14px, env(safe-area-inset-bottom, 14px))' }}>
+      <div className="absolute bottom-0 left-0 right-0 z-20 flex flex-col" style={{ gap: rs(12), padding: `0 ${rs(14)} ${rs(14)} ${rs(14)}`, paddingBottom: `max(${rs(14)}, env(safe-area-inset-bottom, ${rs(14)}))` }}>
 
         {/* Status / Result text */}
         {isFlipping ? (
-          <div className="text-center text-xl tracking-wide text-shadow" style={{ color: '#FFD700' }}>
+          <div className="text-center tracking-wide text-shadow" style={{ fontSize: rs(20), lineHeight: 1.3, color: '#FFD700' }}>
             SPINNING...
           </div>
         ) : lastResult && !mySeat.ready ? (
           <div
-            className="text-center text-xl tracking-wide text-shadow"
+            className="text-center tracking-wide text-shadow"
             style={{
+              fontSize: rs(20),
+              lineHeight: 1.3,
               animation: 'resultPop 0.5s ease-out',
               color: lastResult.winnerId === MY_PLAYER_ID ? '#4CD964' : '#FF3B30',
             }}
@@ -408,15 +419,15 @@ export function App() {
         ) : null}
 
         {/* Row 1: smiley (right-aligned) */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center" style={{ gap: rs(12) }}>
           <div className="flex-1" />
           <div className="circle-btn border-2 border-white/30 inactive pointer-events-none">
-            <img src={smileIcon} alt="" className="w-7 h-7" />
+            <img src={smileIcon} alt="" style={{ width: rs(28), height: rs(28) }} />
           </div>
         </div>
 
         {/* Row 2: Rematch + Double (left) ── gift (right) */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center" style={{ gap: rs(12) }}>
           <div className={`pill-lg cursor-pointer ${activeAction === 'rematch' ? 'pill-active' : ''}`} onClick={() => toggleAction('rematch')}>
             <span style={{ color: '#FF9500' }}>▶</span>
             <span>Rematch</span>
@@ -427,19 +438,19 @@ export function App() {
           </div>
           <div className="flex-1" />
           <div className="circle-btn inactive pointer-events-none" style={{ background: '#FF9500' }}>
-            <img src={giftIcon} alt="" className="w-7 h-7" />
+            <img src={giftIcon} alt="" style={{ width: rs(28), height: rs(28) }} />
           </div>
         </div>
 
         {/* Row 3: Chat input + send (purple) */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center" style={{ gap: rs(12) }}>
           <input
             type="text"
             placeholder="Type message..."
             className="chat-input-bar"
           />
           <div className="circle-btn inactive pointer-events-none" style={{ background: '#5856D6' }}>
-            <img src={sendIcon} alt="" className="w-7 h-7" />
+            <img src={sendIcon} alt="" style={{ width: rs(28), height: rs(28) }} />
           </div>
         </div>
 

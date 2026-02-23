@@ -15,6 +15,7 @@ interface RoomSeat {
   ready: boolean;
   bet: number;
   peerId?: string;
+  action?: 'ready' | 'rematch' | 'double';
 }
 
 interface RoomState {
@@ -33,6 +34,7 @@ interface SeatView {
   bet: number;
   online: boolean;
   peerId?: string;
+  action?: 'ready' | 'rematch' | 'double';
 }
 
 interface RoomStateView {
@@ -77,6 +79,7 @@ function buildRoomView(room: RoomState): RoomStateView {
         bet: seat.bet,
         online: seat.socketId !== null,
         peerId: seat.peerId,
+        action: seat.action,
       };
     }) as [SeatView | null, SeatView | null],
     status: room.status,
@@ -148,7 +151,7 @@ io.on("connection", (socket: Socket) => {
     io.to(roomId).emit("room_state", buildRoomView(room));
   });
 
-  socket.on("toggle_ready", ({ roomId, bet }: { roomId: string; bet: number }) => {
+  socket.on("toggle_ready", ({ roomId, bet, ready, action }: { roomId: string; bet: number; ready: boolean; action?: string }) => {
     const seatLocation = socketToSeat.get(socket.id);
     if (!seatLocation) return;
 
@@ -158,23 +161,21 @@ io.on("connection", (socket: Socket) => {
     const seat = room.seats[seatLocation.seatIndex];
     if (!seat) return;
 
-    // Toggle ready state
-    seat.ready = !seat.ready;
-    if (seat.ready) {
+    // Set ready state explicitly (not toggle)
+    seat.ready = ready;
+    if (ready) {
       seat.bet = bet;
+      seat.action = action as RoomSeat['action'];
     } else {
       seat.bet = 0;
+      seat.action = undefined;
     }
 
     // Check if both seats occupied and both ready
     const [seat0, seat1] = room.seats;
     if (seat0 && seat1 && seat0.ready && seat1.ready) {
-      // Validate bets are equal
+      // Bets must match — if not, both stay ready, just broadcast
       if (seat0.bet !== seat1.bet) {
-        seat0.ready = false;
-        seat0.bet = 0;
-        seat1.ready = false;
-        seat1.bet = 0;
         io.to(seatLocation.roomId).emit("room_state", buildRoomView(room));
         return;
       }
@@ -185,8 +186,10 @@ io.on("connection", (socket: Socket) => {
       if (player0.balance < seat0.bet || player1.balance < seat1.bet) {
         seat0.ready = false;
         seat0.bet = 0;
+        seat0.action = undefined;
         seat1.ready = false;
         seat1.bet = 0;
+        seat1.action = undefined;
         io.to(seatLocation.roomId).emit("room_state", buildRoomView(room));
         return;
       }
@@ -213,8 +216,10 @@ io.on("connection", (socket: Socket) => {
         // Reset seats
         seat0.ready = false;
         seat0.bet = 0;
+        seat0.action = undefined;
         seat1.ready = false;
         seat1.bet = 0;
+        seat1.action = undefined;
         room.status = 'waiting';
 
         io.to(seatLocation.roomId).emit("room_state", buildRoomView(room));
@@ -253,6 +258,7 @@ io.on("connection", (socket: Socket) => {
     seat.socketId = null;
     seat.ready = false;
     seat.bet = 0;
+    seat.action = undefined;
 
     console.log(`Player disconnected from room ${seatLocation.roomId}, seat ${seatLocation.seatIndex}`);
     io.to(seatLocation.roomId).emit("room_state", buildRoomView(room));
